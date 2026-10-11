@@ -28,14 +28,14 @@ MainActivity / MediaBrowser (Compose)
 
 The phone bridge serves status, media listing, playback/download, thumbnails, and diagnostics. It uses a short-lived pairing credential and an HTTP-only session cookie. Traffic on the local network is unencrypted; use a trusted network.
 
-The configured media directories are `/SD0/NOR/M_video/`, `/SD0/NOR/M_event/`, and `/SD0/PHO/M_photo/`. DVR discovery listens on UDP 10000/10001 and also probes the local `/24` for HTTP 80 and RTSP 554. The observed live URL is `rtsp://<DVR-IP>/live`; no authentication or other device protocol is inferred. Confirm directory formats, HTTP Range behavior, RTSP authentication and codecs against each target model/firmware.
+The configured media directories are `/SD0/NOR/M_video/` (normal, `NOR_*`), `/SD0/EVT/M_video/` (event/emergency, `EVT_*`), and `/SD0/PHO/M_photo/` (photos, `PHO_*`); classification uses the filename prefix and the path. DVR discovery listens on UDP 10000/10001 and also probes the local subnet for HTTP 80 and RTSP 554. The observed live URL is `rtsp://<DVR-IP>/live`; no authentication or other device protocol is inferred. Confirm directory formats, HTTP Range behavior, RTSP authentication and codecs against each target model/firmware.
 
 ## Build and verification
 
-Requires Android SDK 35, JDK 17, and the checked-in Gradle wrapper.
+Requires Android SDK 35, JDK 17, and Gradle 8.9. A Gradle wrapper is **not** checked in (builds use a local/cached Gradle 8.9 distribution).
 
 ```powershell
-.\gradlew.bat :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease
+gradle :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease
 ```
 
 Release signing is optional and reads a locally supplied, untracked keystore configured via `local.properties` (`DASHCAM_KEYSTORE` plus the related store/key credentials); the keystore file and `local.properties` are ignored by Git. Keep a secure backup of the keystore and its credentials: future updates must use this same key, and a newly generated replacement will not be accepted as an update to APKs signed with this key. Neither the keystore nor credentials belong in source control or release artifacts.
