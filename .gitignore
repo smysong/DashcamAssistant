@@ -28,3 +28,6 @@ output.json
 # OS
 .DS_Store
 Thumbs.db
+
+# Local-only docs (not published to GitHub)
+feasibility_report.md
