@@ -1,6 +1,6 @@
 name: Build APK
 
-# 云端构建行车记录仪助手 APK（GitHub Actions，ubuntu-latest  runner）
+# 云端构建行车记录仪助手 APK（GitHub Actions，ubuntu-latest runner）
 # 触发：推送到 main 自动构建；也可在 Actions 页面手动 workflow_dispatch；
 #       打 v* 标签（如 v1.0.2）时额外发布 GitHub Release 并附上 APK。
 on:
@@ -17,6 +17,19 @@ jobs:
   build:
     name: Build release APK
     runs-on: ubuntu-latest
+    # 将 Secrets 映射为 job 级环境变量（secrets 不能在 if: 条件里直接使用）。
+    # 若未配置以下 Secret，则产出未签名 APK（app-release-unsigned.apk）。
+    # 配置方法（仓库 Settings → Secrets and variables → Actions → New repository secret）：
+    #   SIGNING_KEY        =  keystore 文件的 base64（本地执行：base64 -w0 upload.keystore）
+    #   KEY_ALIAS          =  keystore 别名
+    #   KEY_STORE_PASSWORD =  keystore 密码
+    #   KEY_PASSWORD       =  key 密码
+    # 密钥仅存于加密 Secrets，不会进入仓库或构建日志。
+    env:
+      SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+      KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+      KEY_STORE_PASSWORD: ${{ secrets.KEY_STORE_PASSWORD }}
+      KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -41,26 +54,18 @@ jobs:
         with:
           gradle-version: "8.9"
 
-      # —— 可选：签名 ——
-      # 若未配置以下 Secrets，则产出未签名 APK（app-release-unsigned.apk）。
-      # 配置方法（仓库 Settings → Secrets and variables → Actions → New repository secret）：
-      #   SIGNING_KEY        =  keystore 文件的 base64（本地执行：base64 -w0 upload.keystore）
-      #   KEY_ALIAS          =  keystore 别名
-      #   KEY_STORE_PASSWORD =  keystore 密码
-      #   KEY_PASSWORD       =  key 密码
-      # 密钥仅存于加密 Secrets，不会进入仓库或构建日志。
       - name: Decode signing keystore (optional)
-        if: ${{ secrets.SIGNING_KEY != '' }}
-        run: echo "${{ secrets.SIGNING_KEY }}" | base64 -d > keystore.jks
+        if: ${{ env.SIGNING_KEY != '' }}
+        run: echo "$SIGNING_KEY" | base64 -d > keystore.jks
 
       - name: Write local.properties for signing (optional)
-        if: ${{ secrets.SIGNING_KEY != '' }}
+        if: ${{ env.SIGNING_KEY != '' }}
         run: |
           {
             echo "DASHCAM_KEYSTORE=keystore.jks"
-            echo "DASHCAM_STORE_PASSWORD=${{ secrets.KEY_STORE_PASSWORD }}"
-            echo "DASHCAM_KEY_ALIAS=${{ secrets.KEY_ALIAS }}"
-            echo "DASHCAM_KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}"
+            echo "DASHCAM_STORE_PASSWORD=$KEY_STORE_PASSWORD"
+            echo "DASHCAM_KEY_ALIAS=$KEY_ALIAS"
+            echo "DASHCAM_KEY_PASSWORD=$KEY_PASSWORD"
           } > local.properties
 
       - name: Build release APK
