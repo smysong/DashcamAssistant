@@ -4,8 +4,8 @@ name: Build APK
 # 触发：推送到 main 自动构建；也可在 Actions 页面手动 workflow_dispatch；
 #       打 v* 标签（如 v1.0.2）时额外发布 GitHub Release 并附上 APK。
 on:
+  # 仅打 v* 标签时触发云端签名构建；push 到 main 不再自动构建。
   push:
-    branches: [ "main" ]
     tags: [ "v*" ]
   workflow_dispatch:
 
