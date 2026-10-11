@@ -14,6 +14,9 @@ import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 
+/** 生成图片缩略图时的临时目录最小可用空间兜底阈值：仅作最后防线，避免分区彻底写满时还硬试。 */
+private const val MOBILE_THUMB_MIN_FREE_BYTES = 2L * 1024 * 1024
+
 internal class MobileThumbnailService(
     context: Context,
     private val backendProvider: () -> DvrBackend?
@@ -46,10 +49,10 @@ internal class MobileThumbnailService(
 
     private fun createImageThumbnail(path: String): Bitmap {
         val cacheDirectory = cache.temporaryDirectory
-        if (cacheDirectory.usableSpace < MediaCachePolicy.MIN_FREE_BYTES_FOR_CACHING +
-            MediaCachePolicy.MAX_THUMBNAIL_SOURCE_BYTES
-        ) {
-            throw IOException("可用空间不足，无法生成图片缩略图")
+        // 临时文件下载完即删：只做极小兜底阈值检查，避免套用 MIN_FREE_BYTES_FOR_CACHING(32MB)+
+        // 上限这种为长期缓存预留的保守阈值而误报“可用空间不足”。
+        if (cacheDirectory.usableSpace < MOBILE_THUMB_MIN_FREE_BYTES) {
+            throw IOException("临时目录可用空间过低，无法生成图片缩略图")
         }
         val source = File.createTempFile("mobile-thumb-", ".tmp", cacheDirectory)
         try {

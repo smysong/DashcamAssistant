@@ -42,8 +42,14 @@ internal fun dashcamSuccessColor(): Color {
 private val GraphiteColorScheme = darkColorScheme(
     primary = DashcamAccent,
     onPrimary = Color(0xFF06151A),
+    primaryContainer = Color(0xFF0B4A56),
+    onPrimaryContainer = Color(0xFFB2E7F0),
     secondary = Color(0xFF86DDE7),
     onSecondary = Color(0xFF10262B),
+    // FilledTonalButton 默认取 secondaryContainer：必须给主题内的青色系值，
+    // 否则会落到 Material 基线淡紫，与全 App 主色割裂（按钮配色不统一的根因）
+    secondaryContainer = Color(0xFF0E3943),
+    onSecondaryContainer = Color(0xFFA9DDE8),
     tertiary = DashcamEmergency,
     background = Color(0xFF0B1118),
     onBackground = Color(0xFFF2F6F8),
@@ -53,13 +59,20 @@ private val GraphiteColorScheme = darkColorScheme(
     onSurfaceVariant = Color(0xFFA8B6C2),
     outline = Color(0xFF2B3B49),
     error = DashcamError,
-    onError = Color(0xFF2B0C0A)
+    onError = Color(0xFF2B0C0A),
+    errorContainer = Color(0xFF5C1A16),
+    onErrorContainer = Color(0xFFF2B8B5)
 )
 
 private val IceColorScheme = lightColorScheme(
     primary = Color(0xFF087E91),
     onPrimary = Color.White,
+    primaryContainer = Color(0xFFC9E8F0),
+    onPrimaryContainer = Color(0xFF06333C),
     secondary = Color(0xFF176A79),
+    // 同上：给主题内的青色系值，避免 FilledTonalButton 落到基线淡紫
+    secondaryContainer = Color(0xFFD2ECF2),
+    onSecondaryContainer = Color(0xFF0A4B57),
     tertiary = Color(0xFF8A5700),
     background = Color(0xFFF2F6F8),
     onBackground = Color(0xFF15232C),
@@ -68,7 +81,9 @@ private val IceColorScheme = lightColorScheme(
     surfaceVariant = Color(0xFFE5EDF1),
     onSurfaceVariant = Color(0xFF51626E),
     outline = Color(0xFFCCD8DE),
-    error = Color(0xFFB3261E)
+    error = Color(0xFFB3261E),
+    errorContainer = Color(0xFFF9DEDC),
+    onErrorContainer = Color(0xFF410E0B)
 )
 
 private val DashcamTypography = Typography(

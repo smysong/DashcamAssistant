@@ -2,20 +2,23 @@ package com.dashcam.assistant
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.media.MediaDataSource
 import android.media.MediaMetadataRetriever
 import android.os.Build
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.content.pm.PackageManager
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -33,24 +36,23 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Slider
-import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
+import android.widget.Toast
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -63,6 +65,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -90,6 +93,9 @@ import com.dashcam.assistant.MediaNameDisplayPreference
 import com.dashcam.assistant.formatMediaName
 import com.dashcam.assistant.bridge.DvrBackend
 import com.dashcam.assistant.bridge.MediaItem
+import java.net.HttpURLConnection
+import java.net.URL
+import kotlin.math.min
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -99,12 +105,19 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.Photo
+import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.Settings
 import java.io.File
 import java.io.FileInputStream
 import java.io.IOException
@@ -126,10 +139,10 @@ enum class MediaTab(val type: String, val label: String) {
     LIVE("live", "实时预览")
 }
 
-private val mediaThumbSemaphore = Semaphore(2)
+private val mediaThumbSemaphore = Semaphore(4)
 private val mediaPhotoTransferSemaphore = Semaphore(1)
 
-private object MediaThumbnailCache {
+internal object MediaThumbnailCache {
     @Volatile private var instance: ThumbnailDiskCache? = null
 
     fun get(context: android.content.Context): ThumbnailDiskCache = instance ?: synchronized(this) {
@@ -152,8 +165,40 @@ fun MediaBrowserScreen(onBack: () -> Unit, initialTab: MediaTab = MediaTab.VIDEO
 
     val context = LocalContext.current
     var nameDisplayMode by remember { mutableStateOf(MediaNameDisplayPreference.load(context)) }
-    var nameModeMenu by remember { mutableStateOf(false) }
-    var pageSizeMenu by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
+    // 下载策略：优先系统默认下载器（DownloadManager，公共 Download 目录）；
+    // 系统下载器不可用时回退应用内置下载（保存到系统媒体库 Movies|Pictures/DashcamAssistant）。
+    // 进度统一写入 DownloadTracker（Compose State），缩略图按钮与全屏保存面板据此显示进度。
+    val onRequestDownload: (DvrBackend?, MediaItem) -> Unit = { b, item ->
+        if (b?.isReady() != true) {
+            Toast.makeText(context, "DVR 未连接，无法下载", Toast.LENGTH_SHORT).show()
+        } else if (systemDownloadAvailable(context)) {
+            val id = enqueueSystemDownload(context, b.directUrl(item.path).orEmpty(), item.name, mediaMimeType(item.name))
+            if (id > 0) {
+                DownloadTracker.trackSystemDownload(context, id, item.path, item.name)
+                Toast.makeText(context, "已交给系统下载器：${item.name}", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(context, "下载启动失败", Toast.LENGTH_SHORT).show()
+            }
+        } else {
+            Toast.makeText(context, "系统下载器不可用，已改用应用内置下载", Toast.LENGTH_SHORT).show()
+            val appContext = context.applicationContext
+            DownloadTracker.startInternal(item.path, item.name) {
+                try {
+                    saveMediaToLibrary(appContext, b, item) { copied, total ->
+                        DownloadTracker.update(item.path, item.name, copied, total ?: -1L)
+                    }
+                    DownloadTracker.update(item.path, item.name, 0L, -1L, done = true)
+                    AppLog.i("下载", "内置下载完成：${item.name}")
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    DownloadTracker.update(item.path, item.name, 0L, -1L, failed = true)
+                    AppLog.e("下载", "内置下载失败：${item.name}（${e.message}）")
+                }
+            }
+        }
+    }
     var tab by remember { mutableStateOf(initialTab) }
     var mediaItems by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
     var loading by remember { mutableStateOf(false) }
@@ -164,7 +209,7 @@ fun MediaBrowserScreen(onBack: () -> Unit, initialTab: MediaTab = MediaTab.VIDEO
     var loadJob by remember { mutableStateOf<Job?>(null) }
     // 分页状态：每页数量默认 10，可选 10/15/20
     var pageOffset by remember { mutableStateOf(0) }
-    var pageSize by remember { mutableStateOf(10) }
+    var pageSize by remember { mutableStateOf(PageSizePreference.load(context)) }
     var pageTotal by remember { mutableStateOf(0) }
 
     /** 加载指定页（默认不刷新缓存；refresh=true 时强制重新扫描 DVR）。 */
@@ -241,9 +286,9 @@ fun MediaBrowserScreen(onBack: () -> Unit, initialTab: MediaTab = MediaTab.VIDEO
                 Modifier.fillMaxWidth().padding(bottom = 18.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Button(
+                FilledTonalButton(
                     onClick = { AppLog.i("车机", "返回主页"); onBack() },
-                    modifier = Modifier.heightIn(min = 56.dp)
+                    modifier = Modifier.heightIn(min = 52.dp)
                 ) { Text("返回") }
                 Text(
                     if (tab == MediaTab.LIVE) "实时预览" else "媒体库",
@@ -260,43 +305,18 @@ fun MediaBrowserScreen(onBack: () -> Unit, initialTab: MediaTab = MediaTab.VIDEO
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+                IconButton(onClick = { showSettings = true }, modifier = Modifier.size(44.dp)) {
+                    Icon(Icons.Filled.Settings, contentDescription = "设置", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
             // 实时预览由首页独立入口进入（route="live"），媒体库内不再放入口按钮，
             // 预览页左上角的「返回」直接回主页；分类 Tab 仅在媒体库三个分类下显示。
             if (tab != MediaTab.LIVE) {
-                // 小屏用可滚动 TabRow，避免三个带图标的标签被挤在一行；大屏保持等分更整齐
-                val tabContent: @Composable () -> Unit = {
-                    MediaTab.values().filter { it != MediaTab.LIVE }.forEach { t ->
-                        Tab(
-                            selected = tab == t,
-                            onClick = {
-                                AppLog.i("车机", "切换分类：${t.label}")
-                                tab = t
-                                pageOffset = 0
-                            },
-                            text = { Text(t.label, style = MaterialTheme.typography.labelLarge) },
-                            icon = {
-                                when (t) {
-                                    MediaTab.VIDEO -> Icon(Icons.Filled.Videocam, contentDescription = null)
-                                    MediaTab.EVENT -> Icon(Icons.Filled.Warning, contentDescription = null)
-                                    MediaTab.PHOTO -> Icon(Icons.Filled.Photo, contentDescription = null)
-                                    MediaTab.LIVE -> Unit
-                                }
-                            }
-                        )
-                    }
-                }
-                if (metrics.scrollableTabs) {
-                    ScrollableTabRow(
-                        selectedTabIndex = tab.ordinal,
-                        containerColor = MaterialTheme.colorScheme.background
-                    ) { tabContent() }
-                } else {
-                    TabRow(
-                        selectedTabIndex = tab.ordinal,
-                        containerColor = MaterialTheme.colorScheme.background
-                    ) { tabContent() }
-                }
+                MediaCategoryPills(current = tab, onSelect = { t ->
+                    AppLog.i("车机", "切换分类：${t.label}")
+                    tab = t
+                    pageOffset = 0
+                })
             }
 
             when (tab) {
@@ -314,7 +334,7 @@ fun MediaBrowserScreen(onBack: () -> Unit, initialTab: MediaTab = MediaTab.VIDEO
                             Icon(Icons.Filled.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(44.dp))
                             Text("无法读取媒体", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(top = 12.dp))
                             Text(loadError, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 4.dp))
-                            Button(onClick = { loadPage(tab.type, pageOffset, pageSize, refresh = true) }, modifier = Modifier.padding(top = 12.dp).heightIn(min = 56.dp)) {
+                            FilledTonalButton(onClick = { loadPage(tab.type, pageOffset, pageSize, refresh = true) }, modifier = Modifier.padding(top = 12.dp).heightIn(min = 52.dp)) {
                                 Text("重试")
                             }
                         }
@@ -346,7 +366,8 @@ fun MediaBrowserScreen(onBack: () -> Unit, initialTab: MediaTab = MediaTab.VIDEO
                                             onOpen = {
                                                 AppLog.i("车机", "打开${if (item.type == "photo") "照片" else "视频"}：${item.name}")
                                                 if (item.type == "photo") selectedPhoto = item else selectedVideo = item
-                                            }
+                                            },
+                                            onRequestDownload = onRequestDownload
                                         )
                                     }
                                 }
@@ -368,7 +389,7 @@ fun MediaBrowserScreen(onBack: () -> Unit, initialTab: MediaTab = MediaTab.VIDEO
                                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    OutlinedButton(
+                                    FilledTonalButton(
                                         onClick = { if (pageOffset - pageSize >= 0) loadPage(tab.type, pageOffset - pageSize, pageSize) },
                                         enabled = pageOffset > 0,
                                         modifier = Modifier.heightIn(min = 52.dp)
@@ -379,65 +400,11 @@ fun MediaBrowserScreen(onBack: () -> Unit, initialTab: MediaTab = MediaTab.VIDEO
                                         style = MaterialTheme.typography.bodyMedium,
                                         maxLines = 1
                                     )
-                                    OutlinedButton(
+                                    FilledTonalButton(
                                         onClick = { if (pageOffset + pageSize < pageTotal) loadPage(tab.type, pageOffset + pageSize, pageSize) },
                                         enabled = pageOffset + pageSize < pageTotal,
                                         modifier = Modifier.heightIn(min = 52.dp)
                                     ) { Text("下一页", style = MaterialTheme.typography.labelLarge) }
-                                }
-                                Row(
-                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(
-                                        "每页",
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        style = MaterialTheme.typography.bodyMedium
-                                    )
-                                    Box {
-                                        OutlinedButton(
-                                            onClick = { pageSizeMenu = true },
-                                            modifier = Modifier.heightIn(min = 52.dp).widthIn(min = 76.dp)
-                                        ) { Text("$pageSize 项", style = MaterialTheme.typography.labelLarge) }
-                                        DropdownMenu(expanded = pageSizeMenu, onDismissRequest = { pageSizeMenu = false }) {
-                                            listOf(10, 15, 20).forEach { sz ->
-                                                DropdownMenuItem(
-                                                    text = { Text("每页 $sz 项") },
-                                                    onClick = {
-                                                        pageSizeMenu = false
-                                                        if (pageSize != sz) {
-                                                            pageSize = sz
-                                                            pageOffset = 0
-                                                            loadPage(tab.type, 0, sz)
-                                                        }
-                                                    }
-                                                )
-                                            }
-                                        }
-                                    }
-                                    Text(
-                                        "文件名",
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        style = MaterialTheme.typography.bodyMedium
-                                    )
-                                    Box {
-                                        OutlinedButton(
-                                            onClick = { nameModeMenu = true },
-                                            modifier = Modifier.heightIn(min = 52.dp).widthIn(min = 104.dp)
-                                        ) { Text(nameDisplayMode.label, style = MaterialTheme.typography.labelLarge) }
-                                        DropdownMenu(expanded = nameModeMenu, onDismissRequest = { nameModeMenu = false }) {
-                                            MediaNameDisplayMode.entries.forEach { mode ->
-                                                DropdownMenuItem(
-                                                    text = { Text(mode.label) },
-                                                    onClick = {
-                                                        MediaNameDisplayPreference.save(context, mode)
-                                                        nameDisplayMode = mode
-                                                        nameModeMenu = false
-                                                    }
-                                                )
-                                            }
-                                        }
-                                    }
                                 }
                             }
                         }
@@ -448,10 +415,34 @@ fun MediaBrowserScreen(onBack: () -> Unit, initialTab: MediaTab = MediaTab.VIDEO
 
         // 全屏播放 / 查看覆盖层
         selectedVideo?.let { v ->
-            FullscreenVideo(backend = backend, item = v, onClose = { selectedVideo = null })
+            FullscreenVideo(
+                backend = backend,
+                item = v,
+                onRequestDownload = onRequestDownload,
+                onClose = { selectedVideo = null }
+            )
         }
         selectedPhoto?.let { p ->
-            FullscreenPhoto(backend = backend, item = p, onClose = { selectedPhoto = null })
+            FullscreenPhoto(
+                backend = backend,
+                item = p,
+                onRequestDownload = onRequestDownload,
+                onClose = { selectedPhoto = null }
+            )
+        }
+        if (showSettings) {
+            SettingsDialog(
+                context = context,
+                initialPageSize = pageSize,
+                initialNameMode = nameDisplayMode,
+                onPageSizeChange = { sz ->
+                    pageSize = sz
+                    pageOffset = 0
+                    loadPage(tab.type, 0, sz)
+                },
+                onNameModeChange = { nameDisplayMode = it },
+                onDismiss = { showSettings = false }
+            )
         }
     }
 }
@@ -495,9 +486,54 @@ private fun MediaEmptyState(title: String, subtitle: String, onRefresh: () -> Un
         Icon(Icons.Filled.Photo, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(52.dp))
         Text(title, style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(top = 12.dp))
         Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 4.dp))
-        OutlinedButton(onClick = onRefresh, modifier = Modifier.padding(top = 12.dp).heightIn(min = 56.dp)) {
+        FilledTonalButton(onClick = onRefresh, modifier = Modifier.padding(top = 12.dp).heightIn(min = 52.dp)) {
             Icon(Icons.Filled.Refresh, contentDescription = null)
             Text("刷新", modifier = Modifier.padding(start = 8.dp))
+        }
+    }
+}
+
+/**
+ * 媒体库分类菜单：现代简约胶囊样式（选中实心主色、未选中描边浅底），
+ * 替代传统下划线 TabRow；横向可滚动以兼容窄屏，点击无深色 ripple 铺底反馈。
+ */
+@Composable
+private fun MediaCategoryPills(current: MediaTab, onSelect: (MediaTab) -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        MediaTab.values().filter { it != MediaTab.LIVE }.forEach { t ->
+            val selected = current == t
+            val container = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface
+            val content = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+            Row(
+                Modifier
+                    .clip(RoundedCornerShape(50))
+                    .background(container)
+                    .border(
+                        1.dp,
+                        if (selected) Color.Transparent else MaterialTheme.colorScheme.outline,
+                        RoundedCornerShape(50)
+                    )
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) { onSelect(t) }
+                    .padding(horizontal = 20.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                when (t) {
+                    MediaTab.VIDEO -> Icon(Icons.Filled.Videocam, contentDescription = null, tint = content, modifier = Modifier.size(18.dp))
+                    MediaTab.EVENT -> Icon(Icons.Filled.Warning, contentDescription = null, tint = content, modifier = Modifier.size(18.dp))
+                    MediaTab.PHOTO -> Icon(Icons.Filled.Photo, contentDescription = null, tint = content, modifier = Modifier.size(18.dp))
+                    MediaTab.LIVE -> Unit
+                }
+                Text(t.label, color = content, style = MaterialTheme.typography.labelLarge)
+            }
         }
     }
 }
@@ -544,7 +580,8 @@ private fun MediaTile(
     item: MediaItem,
     isEvent: Boolean,
     nameDisplayMode: MediaNameDisplayMode,
-    onOpen: () -> Unit
+    onOpen: () -> Unit,
+    onRequestDownload: (DvrBackend?, MediaItem) -> Unit
 ) {
     val isVideo = item.type != "photo"
     Card(
@@ -593,6 +630,10 @@ private fun MediaTile(
                         )
                     }
                 }
+                // 列表项独立下载按钮：点击弹出系统位置选择器后交给系统下载器，与全屏播放页相互独立
+                Box(Modifier.align(Alignment.TopEnd).padding(8.dp)) {
+                    TileDownloadButton(backend = backend, item = item, onRequestDownload = { onRequestDownload(backend, item) })
+                }
             }
             Text(
                 formatMediaName(item.date, item.name, nameDisplayMode),
@@ -602,6 +643,69 @@ private fun MediaTile(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 12.dp)
             )
+        }
+    }
+}
+
+/**
+ * 列表项独立下载按钮：点击直接发起下载（系统下载器优先 / 内置回退）。
+ * 进度来自 DownloadTracker（Compose State）：进行中显示百分比或不确定圈，
+ * 下载中再次点击 = 取消下载；完成显示对勾、失败显示警示，约 4 秒后自动复位可再次下载。
+ */
+@Composable
+private fun TileDownloadButton(
+    backend: DvrBackend?,
+    item: MediaItem,
+    onRequestDownload: () -> Unit
+) {
+    val context = LocalContext.current
+    val progressState = DownloadTracker.progress[item.path]
+    val busy = progressState != null && !progressState.done && !progressState.failed
+    val done = progressState?.done == true
+    val failed = progressState?.failed == true
+
+    FilledIconButton(
+        onClick = {
+            if (busy) {
+                // 下载中点击 = 取消（系统任务 remove / 内置任务 cancel + 清理半成品）
+                DownloadTracker.cancel(item.path)
+                Toast.makeText(context, "已取消下载", Toast.LENGTH_SHORT).show()
+                return@FilledIconButton
+            }
+            if (done) return@FilledIconButton
+            if (backend?.isReady() != true) {
+                Toast.makeText(context, "DVR 未连接，无法下载", Toast.LENGTH_SHORT).show()
+            } else {
+                onRequestDownload()
+            }
+        },
+        modifier = Modifier.size(40.dp),
+        colors = IconButtonDefaults.filledIconButtonColors(
+            containerColor = when {
+                failed -> MaterialTheme.colorScheme.errorContainer
+                busy || done -> MaterialTheme.colorScheme.primaryContainer
+                else -> MaterialTheme.colorScheme.surfaceVariant
+            },
+            contentColor = when {
+                failed -> MaterialTheme.colorScheme.onErrorContainer
+                busy || done -> MaterialTheme.colorScheme.onPrimaryContainer
+                else -> MaterialTheme.colorScheme.primary
+            }
+        )
+    ) {
+        when {
+            done -> Icon(Icons.Filled.Check, contentDescription = "下载完成", modifier = Modifier.size(20.dp))
+            failed -> Icon(Icons.Filled.Warning, contentDescription = "下载失败，点击重试", modifier = Modifier.size(20.dp))
+            busy -> {
+                val fraction = progressState?.fraction
+                if (fraction == null) {
+                    // 总大小未知：只给一个小圈表示在跑，不占位大转圈
+                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                } else {
+                    Text("${(fraction * 100).toInt()}%", style = MaterialTheme.typography.labelSmall)
+                }
+            }
+            else -> Icon(Icons.Filled.Download, contentDescription = "下载", modifier = Modifier.size(20.dp))
         }
     }
 }
@@ -668,18 +772,134 @@ private fun MediaThumb(backend: DvrBackend?, item: MediaItem, modifier: Modifier
     }
 }
 
-/** 用 MediaMetadataRetriever 取视频首帧（客户端动态生成缩略图，不走 DVR 缩略图端点）。 */
-private fun extractVideoFrame(url: String): Bitmap? {
-    val retriever = MediaMetadataRetriever()
-    return try {
-        retriever.setDataSource(url)
-        retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-    } catch (_: Exception) {
-        null
-    } finally {
-        runCatching { retriever.release() }
+/**
+ * 带上限的 HTTP 数据源：只为取首帧而拉取文件前若干字节（Range 请求），
+ * 避免 MediaMetadataRetriever 对远程直链从头拉整段。Cherokee 原生支持 Range。
+ * 封顶 maxBytes，超出即返回 EOF，绝不拉整段文件。
+ */
+private class BoundedHttpMediaSource(
+    private val url: String,
+    private val maxBytes: Long
+) : MediaDataSource() {
+    private val lock = Any()
+    private var initialized = false
+    private var data: ByteArray? = null
+    private var fetched = 0L         // data 中已填充的字节数
+    private var totalSize = -1L      // 真实文件大小（封顶 maxBytes 后的值）
+    private var closed = false
+
+    private fun init() {
+        synchronized(lock) {
+            if (initialized) return
+            initialized = true
+            totalSize = runCatching { headContentLength() }.getOrDefault(-1L)
+            val cap = if (totalSize > 0) min(totalSize, maxBytes) else maxBytes
+            data = ByteArray(cap.toInt())
+        }
+    }
+
+    override fun getSize(): Long {
+        init()
+        // 小文件（≤上限）如实返回真实大小；大文件（被封顶）返回 -1（未知），
+        // 让 MediaMetadataRetriever 以 EOF 收尾，触发下方回退到直连 URL。
+        return if (totalSize in 0..maxBytes) totalSize else -1L
+    }
+
+    override fun readAt(position: Long, buffer: ByteArray, offset: Int, size: Int): Int {
+        if (size == 0) return 0
+        if (position < 0) return -1
+        init()
+        ensure(position + size.toLong())
+        synchronized(lock) {
+            val d = data ?: return -1
+            if (position >= fetched) return -1
+            val n = min((fetched - position).toInt(), size)
+            System.arraycopy(d, position.toInt(), buffer, offset, n)
+            return n
+        }
+    }
+
+    private fun ensure(need: Long) {
+        synchronized(lock) {
+            if (closed || need <= fetched) return
+            val cap = (data?.size ?: 0).toLong()
+            while (fetched < need && fetched < cap) {
+                val end = min(fetched + CHUNK - 1, cap - 1)
+                val chunk = httpRange(fetched, end) ?: break
+                System.arraycopy(chunk, 0, data!!, fetched.toInt(), chunk.size)
+                fetched += chunk.size
+            }
+        }
+    }
+
+    private fun httpRange(start: Long, endInclusive: Long): ByteArray? {
+        val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+            setRequestProperty("Range", "bytes=$start-$endInclusive")
+            connectTimeout = 10_000
+            readTimeout = 45_000
+            setRequestProperty("User-Agent", "DashcamAssistant")
+        }
+        return try {
+            if (conn.responseCode !in 200..299 && conn.responseCode != 206) null
+            else conn.inputStream.use { it.readBytes() }
+        } catch (_: Exception) {
+            null
+        } finally {
+            runCatching { conn.disconnect() }
+        }
+    }
+
+    private fun headContentLength(): Long {
+        val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+            requestMethod = "HEAD"
+            connectTimeout = 10_000
+            readTimeout = 45_000
+        }
+        return try {
+            if (conn.responseCode !in 200..299 && conn.responseCode != 206) -1 else conn.contentLengthLong
+        } catch (_: Exception) {
+            -1
+        } finally {
+            runCatching { conn.disconnect() }
+        }
+    }
+
+    override fun close() {
+        synchronized(lock) { closed = true; data = null }
+    }
+
+    companion object {
+        private const val CHUNK = 512 * 1024
     }
 }
+
+/** 用 MediaMetadataRetriever 取视频首帧（客户端动态生成缩略图，不走 DVR 缩略图端点）。 */
+private fun extractVideoFrame(url: String, maxBytes: Long = MediaCachePolicy.MAX_THUMBNAIL_FETCH_BYTES): Bitmap? {
+    fun fromRetriever(get: (MediaMetadataRetriever) -> Unit): Bitmap? {
+        val retriever = MediaMetadataRetriever()
+        return try {
+            get(retriever)
+            // time=0 取不到（部分设备首帧黑屏或未就绪）时回退到 1s 处，提高缩略图成功率
+            retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                ?: retriever.getFrameAtTime(1_000_000, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+        } catch (_: Exception) {
+            null
+        } finally {
+            runCatching { retriever.release() }
+        }
+    }
+    // 优先：按上限 Range 拉取取首帧（拉取量封顶，对 DVR 小服务器友好）；
+    // 极端情况下（如 moov 在文件尾部导致前 8MB 取不到帧）回退到直连 URL（旧行为）。
+    return fromRetriever { it.setDataSource(BoundedHttpMediaSource(url, maxBytes)) }
+        ?: fromRetriever { it.setDataSource(url) }
+}
+
+/**
+ * 生成照片缩略图时的临时目录最小可用空间兜底阈值：仅作最后防线，避免分区彻底写满时还硬试。
+ * 注意：这里刻意不使用 [MediaCachePolicy.MIN_FREE_BYTES_FOR_CACHING]——那是给长期磁盘缓存预留的保守阈值，
+ * 而缩略图临时文件下载完即删，只需单文件量级的余量即可，套用 32MB+上限 会在清缓存后误报“可用空间不足”。
+ */
+private const val TEMP_DIR_MIN_FREE_BYTES = 2L * 1024 * 1024
 
 private suspend fun loadSampledPhoto(
     backend: DvrBackend,
@@ -689,19 +909,29 @@ private suspend fun loadSampledPhoto(
     maxSourceBytes: Long = MediaCachePolicy.MAX_THUMBNAIL_SOURCE_BYTES
 ): Bitmap? = mediaPhotoTransferSemaphore.withPermit {
     withContext(Dispatchers.IO) {
-        val availableBytes = cache.temporaryDirectory.usableSpace
-        if (availableBytes < MediaCachePolicy.MIN_FREE_BYTES_FOR_CACHING + maxSourceBytes) {
-            throw IOException("可用空间不足，无法生成照片缩略图")
+        val usable = cache.temporaryDirectory.usableSpace
+        if (usable < TEMP_DIR_MIN_FREE_BYTES) {
+            throw IOException("临时目录可用空间过低（${usable / (1024 * 1024)}MB），无法生成照片缩略图")
+        }
+        // 实际只需下载“真实文件大小”量级的数据：用 item.size 估算下载上限（未知时回退 maxSourceBytes），
+        // 并始终不超过 maxSourceBytes 这一安全硬上限，避免一次性拉取超大文件压垮 DVR 嵌入式小服务器。
+        val downloadCap = if (item.size > 0L) {
+            minOf(item.size + 8L * 1024 * 1024, maxSourceBytes)
+        } else {
+            maxSourceBytes
         }
         val temp = File.createTempFile("dashcam-thumb-", ".tmp", cache.temporaryDirectory)
         try {
             temp.outputStream().use { output ->
                 backend.copyFileTo(
                     item.path,
-                    LimitedOutputStream(output, maxSourceBytes)
+                    LimitedOutputStream(output, downloadCap)
                 )
             }
             decodeSampledFile(temp, maxDimension)
+        } catch (e: IOException) {
+            // 磁盘空间不足等真实 IO 错误：转译为可读信息交由 UI 展示，避免臆断“可用空间不足”
+            throw IOException("图片读取失败：${e.message}")
         } finally {
             temp.delete()
         }
@@ -767,6 +997,7 @@ private fun Media3Player(
     var playing by remember(url, attempt) { mutableStateOf(false) }
     var positionMs by remember(url, attempt) { mutableStateOf(0L) }
     var durationMs by remember(url, attempt) { mutableStateOf(0L) }
+    var bufferedPositionMs by remember(url, attempt) { mutableStateOf(0L) }
     var player by remember(url, attempt) { mutableStateOf<ExoPlayer?>(null) }
     var playerView by remember { mutableStateOf<PlayerView?>(null) }
     var cacheWarning by remember(url, attempt) { mutableStateOf<String?>(null) }
@@ -774,6 +1005,10 @@ private fun Media3Player(
     var reconnecting by remember(url, attempt) { mutableStateOf(false) }
     val context = LocalContext.current
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
+    val scope = rememberCoroutineScope()
+    // 倍速档位与当前档（点播可选，直播固定 1x）；截图进行中标记
+    var speedIndex by remember(url, attempt) { mutableStateOf(0) }
+    var screenshotting by remember(url, attempt) { mutableStateOf(false) }
 
     DisposableEffect(url, rtsp, attempt) {
         var instance: ExoPlayer? = null
@@ -858,8 +1093,10 @@ private fun Media3Player(
         try {
             if (url.isBlank()) throw IOException("无效的播放地址")
             val loadControl = DefaultLoadControl.Builder()
-                .setBufferDurationsMs(2_500, 10_000, 750, 1_500)
-                .setTargetBufferBytes(16 * 1024 * 1024)
+                // 增大缓冲水位，减少弱网/低端设备上的频繁 rebuffer：
+                // 最小缓冲 8s、最大缓冲 30s、起播缓冲 1.5s、重缓冲后起播 3s、目标缓冲 48MB
+                .setBufferDurationsMs(8_000, 30_000, 1_500, 3_000)
+                .setTargetBufferBytes(48 * 1024 * 1024)
                 .setPrioritizeTimeOverSizeThresholds(true)
                 .build()
             val exoPlayer = ExoPlayer.Builder(context)
@@ -924,6 +1161,7 @@ private fun Media3Player(
         while (true) {
             positionMs = activePlayer.currentPosition.coerceAtLeast(0L)
             durationMs = activePlayer.duration.takeIf { it > 0L } ?: 0L
+            bufferedPositionMs = activePlayer.bufferedPosition.coerceAtLeast(0L)
             delay(500)
         }
     }
@@ -969,48 +1207,134 @@ private fun Media3Player(
                     .background(Color(0xAA000000), RoundedCornerShape(8.dp)).padding(8.dp)
             )
         }
-        Row(
+        Column(
             Modifier.align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .background(Color(0xAA000000))
                 .navigationBarsPadding()
                 .padding(horizontal = 12.dp, vertical = 6.dp)
                 .heightIn(min = 56.dp),
-            verticalAlignment = Alignment.CenterVertically
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            IconButton(
-                onClick = {
-                    val activePlayer = player ?: return@IconButton
-                    if (activePlayer.isPlaying) {
-                        activePlayer.pause()
-                    } else if (prepared) {
-                        activePlayer.play()
-                    }
-                },
-                enabled = prepared && error == null && player != null
-            ) {
-                Icon(
-                    if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                    contentDescription = if (playing) "暂停" else "播放",
-                    tint = Color.White
-                )
-            }
             if (!rtsp) {
-                Text(formatPlaybackTime(positionMs), color = Color.White, style = MaterialTheme.typography.labelSmall)
-                Slider(
-                    value = positionMs.toFloat().coerceIn(0f, durationMs.toFloat().coerceAtLeast(1f)),
-                    onValueChange = { positionMs = it.toLong() },
-                    onValueChangeFinished = {
-                        runCatching { player?.seekTo(positionMs) }
-                            .onFailure { error = it.message ?: "无法跳转到所选时间" }
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(formatPlaybackTime(positionMs), color = Color.White, style = MaterialTheme.typography.labelSmall)
+                    PlaybackProgressBar(
+                        positionMs = positionMs,
+                        durationMs = durationMs,
+                        bufferedMs = bufferedPositionMs,
+                        enabled = prepared && durationMs > 0 && error == null,
+                        onValueChange = { positionMs = it },
+                        onValueChangeFinished = {
+                            runCatching { player?.seekTo(positionMs) }
+                                .onFailure { error = it.message ?: "无法跳转到所选时间" }
+                        },
+                        modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
+                    )
+                    Text(formatPlaybackTime(durationMs), color = Color.White, style = MaterialTheme.typography.labelSmall)
+                }
+            }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                if (!rtsp) {
+                    // 快退 10 秒
+                    IconButton(
+                        onClick = {
+                            val activePlayer = player ?: return@IconButton
+                            runCatching { activePlayer.seekTo((activePlayer.currentPosition - 10_000L).coerceAtLeast(0L)) }
+                        },
+                        enabled = prepared && error == null && player != null
+                    ) {
+                        Icon(Icons.Filled.Replay10, contentDescription = "快退 10 秒", tint = Color.White)
+                    }
+                }
+                // 播放 / 暂停（主控制，稍大）
+                FilledIconButton(
+                    onClick = {
+                        val activePlayer = player ?: return@FilledIconButton
+                        if (activePlayer.isPlaying) {
+                            activePlayer.pause()
+                        } else if (prepared) {
+                            activePlayer.play()
+                        }
                     },
-                    valueRange = 0f..durationMs.toFloat().coerceAtLeast(1f),
-                    enabled = prepared && durationMs > 0 && error == null,
-                    modifier = Modifier.weight(1f)
-                )
-                Text(formatPlaybackTime(durationMs), color = Color.White, style = MaterialTheme.typography.labelSmall)
-            } else {
-                Text("直播", color = Color.White, style = MaterialTheme.typography.labelSmall)
+                    enabled = prepared && error == null && player != null,
+                    modifier = Modifier.size(48.dp),
+                    colors = IconButtonDefaults.filledIconButtonColors(
+                        containerColor = Color.White.copy(alpha = 0.18f),
+                        contentColor = Color.White
+                    )
+                ) {
+                    Icon(
+                        if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                        contentDescription = if (playing) "暂停" else "播放"
+                    )
+                }
+                if (!rtsp) {
+                    // 快进 10 秒
+                    IconButton(
+                        onClick = {
+                            val activePlayer = player ?: return@IconButton
+                            runCatching { activePlayer.seekTo(activePlayer.currentPosition + 10_000L) }
+                        },
+                        enabled = prepared && error == null && player != null && durationMs > 0
+                    ) {
+                        Icon(Icons.Filled.Forward10, contentDescription = "快进 10 秒", tint = Color.White)
+                    }
+                    // 倍速循环切换
+                    FilledTonalButton(
+                        onClick = {
+                            val activePlayer = player ?: return@FilledTonalButton
+                            val next = (speedIndex + 1) % PLAYBACK_SPEEDS.size
+                            speedIndex = next
+                            runCatching { activePlayer.setPlaybackSpeed(PLAYBACK_SPEEDS[next]) }
+                        },
+                        enabled = prepared && error == null && player != null,
+                        modifier = Modifier.heightIn(min = 40.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                        colors = ButtonDefaults.filledTonalButtonColors(
+                            containerColor = Color.White.copy(alpha = 0.18f),
+                            contentColor = Color.White
+                        )
+                    ) {
+                        Text("${PLAYBACK_SPEEDS[speedIndex]}x", style = MaterialTheme.typography.labelMedium)
+                    }
+                    // 截图：按当前播放位置取帧，保存到 Pictures/DashcamAssistant
+                    IconButton(
+                        onClick = {
+                            val activePlayer = player ?: return@IconButton
+                            if (screenshotting) return@IconButton
+                            screenshotting = true
+                            val position = activePlayer.currentPosition
+                            val videoUrl = url
+                            scope.launch {
+                                val ok = withContext(Dispatchers.IO) {
+                                    captureFrameToGallery(context, videoUrl, position)
+                                }
+                                screenshotting = false
+                                Toast.makeText(
+                                    context,
+                                    if (ok != null) "截图已保存：$ok" else "截图失败，请重试",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        },
+                        enabled = prepared && error == null && player != null
+                    ) {
+                        if (screenshotting) {
+                            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = Color.White)
+                        } else {
+                            Icon(Icons.Filled.PhotoCamera, contentDescription = "截图", tint = Color.White)
+                        }
+                    }
+                } else {
+                    Text("直播", color = Color.White, style = MaterialTheme.typography.labelSmall)
+                }
             }
         }
         if (error != null) {
@@ -1028,9 +1352,9 @@ private fun Media3Player(
                     style = MaterialTheme.typography.bodyLarge,
                     textAlign = TextAlign.Center
                 )
-                Button(
+                FilledTonalButton(
                     onClick = { attempt++ },
-                    modifier = Modifier.padding(top = 12.dp).heightIn(min = 56.dp)
+                    modifier = Modifier.padding(top = 12.dp).heightIn(min = 52.dp)
                 ) { Text("重试", style = MaterialTheme.typography.labelLarge) }
             }
         }
@@ -1042,8 +1366,147 @@ private fun formatPlaybackTime(milliseconds: Long): String {
     return "%d:%02d".format(seconds / 60, seconds % 60)
 }
 
+/** 播放器倍速档位（控制条上循环切换）。 */
+private val PLAYBACK_SPEEDS = listOf(1.0f, 1.25f, 1.5f, 2.0f, 0.75f)
+
+/**
+ * 按播放位置截取当前帧并保存到系统相册 Pictures/DashcamAssistant。
+ * 返回保存的文件名；失败返回 null。用 MediaMetadataRetriever 直连 DVR HTTP 直链取帧。
+ */
+private fun captureFrameToGallery(context: android.content.Context, url: String, positionMs: Long): String? {
+    if (url.isBlank()) return null
+    val retriever = MediaMetadataRetriever()
+    return try {
+        retriever.setDataSource(url, HashMap())
+        val positionUs = positionMs.coerceAtLeast(0L) * 1000L
+        val frame = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            retriever.getScaledFrameAtTime(positionUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 1280, 720)
+        } else {
+            retriever.getFrameAtTime(positionUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+        } ?: return null
+        val resolver = context.contentResolver
+        val name = "截图_%s.jpg".format(
+            java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.getDefault())
+                .format(java.util.Date())
+        )
+        val values = android.content.ContentValues().apply {
+            put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, name)
+            put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                put(
+                    android.provider.MediaStore.MediaColumns.RELATIVE_PATH,
+                    "${Environment.DIRECTORY_PICTURES}/DashcamAssistant"
+                )
+                put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1)
+            } else {
+                @Suppress("DEPRECATION")
+                val dir = File(
+                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
+                    "DashcamAssistant"
+                )
+                if (!dir.exists() && !dir.mkdirs()) return null
+                put(android.provider.MediaStore.MediaColumns.DATA, File(dir, name).absolutePath)
+            }
+        }
+        val uri = resolver.insert(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+            ?: return null
+        try {
+            resolver.openOutputStream(uri, "w")?.use { out ->
+                if (!frame.compress(Bitmap.CompressFormat.JPEG, 90, out)) {
+                    throw IOException("截图写入失败")
+                }
+            } ?: return null
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                resolver.update(uri, android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0)
+                }, null, null)
+            }
+            name
+        } catch (e: Exception) {
+            runCatching { resolver.delete(uri, null, null) }
+            throw e
+        }
+    } catch (e: Exception) {
+        AppLog.e("截图", "截取当前帧失败：${e.message}")
+        null
+    } finally {
+        runCatching { retriever.release() }
+    }
+}
+
+/**
+ * 播放进度条：在原生 Slider 基础上叠加「已缓冲」区段，并用主题色区分已播/已缓冲/未播三段，
+ * 圆角细条 + 白色手柄，整体走现代简约风。可拖动跳转，松手时回调 onValueChangeFinished。
+ */
 @Composable
-private fun FullscreenVideo(backend: DvrBackend?, item: MediaItem, onClose: () -> Unit) {
+@OptIn(ExperimentalMaterial3Api::class)
+private fun PlaybackProgressBar(
+    positionMs: Long,
+    durationMs: Long,
+    bufferedMs: Long,
+    enabled: Boolean,
+    onValueChange: (Long) -> Unit,
+    onValueChangeFinished: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val duration = durationMs.coerceAtLeast(1L)
+    val safePos = positionMs.coerceIn(0L, duration)
+    val progress = (safePos.toFloat() / duration).coerceIn(0f, 1f)
+    val buffered = (bufferedMs.coerceIn(0L, duration).toFloat() / duration).coerceIn(0f, 1f)
+    Slider(
+        value = safePos.toFloat(),
+        onValueChange = { onValueChange(it.toLong()) },
+        onValueChangeFinished = onValueChangeFinished,
+        valueRange = 0f..duration.toFloat(),
+        enabled = enabled,
+        modifier = modifier,
+        colors = SliderDefaults.colors(
+            thumbColor = Color.White,
+            activeTrackColor = MaterialTheme.colorScheme.primary,
+            inactiveTrackColor = Color.White.copy(alpha = 0.25f),
+            disabledThumbColor = Color.White.copy(alpha = 0.5f),
+            disabledActiveTrackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f),
+            disabledInactiveTrackColor = Color.White.copy(alpha = 0.15f)
+        ),
+        // 圆点手柄：显式 14dp 圆形（覆盖默认大拇指），更符合"圆点滑块"的观感
+        thumb = {
+            Box(
+                Modifier
+                    .size(14.dp)
+                    .background(Color.White, CircleShape)
+            )
+        },
+        track = { _ ->
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(4.dp)
+                    .background(Color.White.copy(alpha = 0.22f), RoundedCornerShape(2.dp))
+            ) {
+                Box(
+                    Modifier
+                        .fillMaxWidth(buffered)
+                        .height(4.dp)
+                        .background(Color.White.copy(alpha = 0.5f), RoundedCornerShape(2.dp))
+                )
+                Box(
+                    Modifier
+                        .fillMaxWidth(progress)
+                        .height(4.dp)
+                        .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(2.dp))
+                )
+            }
+        }
+    )
+}
+
+@Composable
+private fun FullscreenVideo(
+    backend: DvrBackend?,
+    item: MediaItem,
+    onRequestDownload: (DvrBackend?, MediaItem) -> Unit,
+    onClose: () -> Unit
+) {
     // ExoPlayer uses a bounded disk cache and streams the DVR HTTP resource.
     val connected = backend?.isReady() == true
     val url = if (connected) (backend?.directUrl(item.path) ?: "") else ""
@@ -1053,39 +1516,47 @@ private fun FullscreenVideo(backend: DvrBackend?, item: MediaItem, onClose: () -
         } else {
             CenteredText("DVR 未连接")
         }
-        Button(
-            onClick = onClose,
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .statusBarsPadding()
-                .padding(12.dp)
-                .heightIn(min = 52.dp)
-        ) { Text("关闭", style = MaterialTheme.typography.labelLarge) }
-        MediaSaveControls(
-            backend,
-            item,
+        // 顶部贯穿半透明操作栏：关闭、文件名、下载/进度/取消 统一放在同一区域
+        Row(
             Modifier
-                .align(Alignment.TopEnd)
+                .align(Alignment.TopStart)
+                .fillMaxWidth()
+                .background(Color(0x99000000))
                 .statusBarsPadding()
-                .padding(12.dp)
-        )
-        // 文件名叠在视频画面上：加半透明底衬，避免浅色画面下白字看不清
-        Text(
-            item.name,
-            color = Color.White,
-            style = MaterialTheme.typography.labelMedium,
-            modifier = Modifier
-                .align(Alignment.BottomStart)
-                .navigationBarsPadding()
-                .padding(12.dp)
-                .background(Color(0xAA000000), RoundedCornerShape(8.dp))
-                .padding(horizontal = 10.dp, vertical = 6.dp)
-        )
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            FilledIconButton(
+                onClick = onClose,
+                modifier = Modifier.size(40.dp),
+                colors = IconButtonDefaults.filledIconButtonColors(
+                    containerColor = Color.White.copy(alpha = 0.18f),
+                    contentColor = Color.White
+                )
+            ) {
+                Icon(Icons.Filled.Close, contentDescription = "关闭", modifier = Modifier.size(22.dp))
+            }
+            Text(
+                item.name,
+                color = Color.White,
+                style = MaterialTheme.typography.labelMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+            MediaSaveControls(backend, item, onRequestDownload)
+        }
     }
 }
 
 @Composable
-private fun FullscreenPhoto(backend: DvrBackend?, item: MediaItem, onClose: () -> Unit) {
+private fun FullscreenPhoto(
+    backend: DvrBackend?,
+    item: MediaItem,
+    onRequestDownload: (DvrBackend?, MediaItem) -> Unit,
+    onClose: () -> Unit
+) {
     val context = LocalContext.current
     val thumbnailCache = remember(context) { MediaThumbnailCache.get(context) }
     var bmp by remember(item.path) { mutableStateOf<Bitmap?>(null) }
@@ -1122,143 +1593,117 @@ private fun FullscreenPhoto(backend: DvrBackend?, item: MediaItem, onClose: () -
                 modifier = Modifier.align(Alignment.Center)
             )
         }
-        Button(
-            onClick = onClose,
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .statusBarsPadding()
-                .padding(12.dp)
-                .heightIn(min = 52.dp)
-        ) { Text("关闭", style = MaterialTheme.typography.labelLarge) }
-        MediaSaveControls(
-            backend,
-            item,
+        // 与全屏视频一致的顶部贯穿半透明操作栏：关闭、文件名、下载/进度/取消
+        Row(
             Modifier
-                .align(Alignment.TopEnd)
+                .align(Alignment.TopStart)
+                .fillMaxWidth()
+                .background(Color(0x99000000))
                 .statusBarsPadding()
-                .padding(12.dp)
-        )
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            FilledIconButton(
+                onClick = onClose,
+                modifier = Modifier.size(40.dp),
+                colors = IconButtonDefaults.filledIconButtonColors(
+                    containerColor = Color.White.copy(alpha = 0.18f),
+                    contentColor = Color.White
+                )
+            ) {
+                Icon(Icons.Filled.Close, contentDescription = "关闭", modifier = Modifier.size(22.dp))
+            }
+            Text(
+                item.name,
+                color = Color.White,
+                style = MaterialTheme.typography.labelMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+            MediaSaveControls(backend, item, onRequestDownload)
+        }
     }
 }
 
+/**
+ * 全屏页保存控件（内联透明样式，置于顶部半透明操作栏内）：
+ * 进度统一来自 DownloadTracker；下载中提供「取消」，失败提供「重试」。
+ */
 @Composable
-private fun MediaSaveControls(backend: DvrBackend?, item: MediaItem, modifier: Modifier = Modifier) {
+private fun MediaSaveControls(
+    backend: DvrBackend?,
+    item: MediaItem,
+    onRequestDownload: (DvrBackend?, MediaItem) -> Unit,
+    modifier: Modifier = Modifier
+) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    var saveState by remember(item.path) { mutableStateOf(MediaSaveState()) }
-    var saveJob by remember(item.path) { mutableStateOf<Job?>(null) }
-
-    val beginSave: () -> Unit = {
-        val b = backend
-        if (b?.isReady() != true) {
-            saveState = saveState.copy(phase = MediaSavePhase.FAILED, error = "DVR 未连接")
-        } else if (saveState.phase != MediaSavePhase.COPYING) {
-            saveState = MediaSaveState().begin()
-            saveJob = scope.launch {
-                var lastProgressAt = 0L
-                try {
-                    saveMediaToLibrary(context, b, item) { copied, total ->
-                        val now = SystemClock.elapsedRealtime()
-                        if (now - lastProgressAt >= 250L || (total != null && copied >= total)) {
-                            lastProgressAt = now
-                            withContext(Dispatchers.Main.immediate) {
-                                saveState = saveState.progress(copied, total)
-                            }
-                        }
-                    }
-                    saveState = saveState.succeed()
-                    AppLog.i("媒体保存", "已将媒体保存到系统媒体库：${item.name}")
-                } catch (e: CancellationException) {
-                    saveState = saveState.cancel()
-                    throw e
-                } catch (e: Exception) {
-                    saveState = saveState.fail(e.message ?: "保存失败")
-                    AppLog.w("媒体保存", "保存失败：${item.name}，${saveState.error}")
-                } finally {
-                    saveJob = null
-                }
-            }
-        }
-    }
-    val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) beginSave() else {
-            saveState = MediaSaveState().fail("需要存储权限才能保存媒体")
-        }
-    }
-
-    // 该面板叠在全屏黑色画面上，因此限定宽度（否则内部 LinearProgressIndicator 的
-    // fillMaxWidth 会把面板撑到整屏宽），并统一用半透明深色底衬保证任意主题下可读。
-    Column(
-        modifier
-            .widthIn(max = 240.dp)
-            .background(Color(0xAA000000), RoundedCornerShape(12.dp))
-            .padding(12.dp),
-        horizontalAlignment = Alignment.End
+    // 进度统一来自 DownloadTracker：与缩略图下载按钮同一数据源
+    val progressState = DownloadTracker.progress[item.path]
+    val busy = progressState != null && !progressState.done && !progressState.failed
+    val done = progressState?.done == true
+    val failed = progressState?.failed == true
+    Row(
+        modifier,
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (saveState.phase == MediaSavePhase.SAVED) {
-                // 面板背景恒为深色，用亮绿；不用 Color.Green（浅色主题下对比度不足且非主题色）
+        if (busy || done || failed) {
+            Text(
+                when {
+                    busy -> {
+                        val fraction = progressState?.fraction
+                        if (fraction == null) "下载中…" else "下载中 ${(fraction * 100).toInt()}%"
+                    }
+                    done -> "已保存"
+                    else -> "下载失败"
+                },
+                color = when {
+                    failed -> Color(0xFFFF8A80)
+                    done -> DashcamConnectedDark
+                    else -> Color.White
+                },
+                style = MaterialTheme.typography.labelMedium,
+                maxLines = 1
+            )
+        }
+        if (busy) {
+            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = Color.White)
+            FilledTonalButton(
+                onClick = {
+                    DownloadTracker.cancel(item.path)
+                    Toast.makeText(context, "已取消下载", Toast.LENGTH_SHORT).show()
+                },
+                modifier = Modifier.heightIn(min = 40.dp),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                colors = ButtonDefaults.filledTonalButtonColors(
+                    containerColor = Color.White.copy(alpha = 0.18f),
+                    contentColor = Color.White
+                )
+            ) { Text("取消", style = MaterialTheme.typography.labelLarge) }
+        } else {
+            FilledTonalButton(
+                onClick = { if (backend?.isReady() == true) onRequestDownload(backend, item) },
+                enabled = backend?.isReady() == true,
+                modifier = Modifier.heightIn(min = 40.dp),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                colors = ButtonDefaults.filledTonalButtonColors(
+                    containerColor = Color.White.copy(alpha = 0.18f),
+                    contentColor = Color.White
+                )
+            ) {
+                Icon(
+                    if (failed) Icons.Filled.Warning else Icons.Filled.Download,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp)
+                )
                 Text(
-                    "已保存到媒体库",
-                    color = DashcamConnectedDark,
-                    style = MaterialTheme.typography.labelMedium,
-                    modifier = Modifier.padding(end = 4.dp)
+                    if (failed) "重试" else if (done) "再下载" else "下载",
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier = Modifier.padding(start = 6.dp)
                 )
             }
-            if (saveState.phase == MediaSavePhase.COPYING) {
-                Button(
-                    onClick = {
-                        saveState = saveState.cancel()
-                        saveJob?.cancel()
-                    },
-                    modifier = Modifier.heightIn(min = 52.dp)
-                ) { Text("取消保存", style = MaterialTheme.typography.labelLarge) }
-            } else {
-                Button(
-                    modifier = Modifier.heightIn(min = 52.dp),
-                    onClick = {
-                        saveState = MediaSaveState()
-                        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
-                            ContextCompat.checkSelfPermission(
-                                context,
-                                android.Manifest.permission.WRITE_EXTERNAL_STORAGE
-                            ) != PackageManager.PERMISSION_GRANTED
-                        ) {
-                            permissionLauncher.launch(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
-                        } else {
-                            beginSave()
-                        }
-                    }
-                ) { Text("保存", style = MaterialTheme.typography.labelLarge) }
-            }
-        }
-        if (saveState.phase == MediaSavePhase.COPYING) {
-            Text(
-                if (saveState.totalBytes != null && saveState.totalBytes!! > 0) {
-                    "已传输 ${formatBytes(saveState.copiedBytes)} / ${formatBytes(saveState.totalBytes!!)}"
-                } else if (saveState.copiedBytes > 0) {
-                    "已传输 ${formatBytes(saveState.copiedBytes)}"
-                } else {
-                    "正在准备保存…"
-                },
-                color = Color.White,
-                style = MaterialTheme.typography.labelSmall,
-                textAlign = TextAlign.End
-            )
-            LinearProgressIndicator(
-                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                color = Color.White,
-                trackColor = Color.White.copy(alpha = 0.24f)
-            )
-        }
-        if (saveState.phase == MediaSavePhase.CANCELLED) {
-            Text("保存已取消", color = Color.White, style = MaterialTheme.typography.labelSmall)
-        }
-        if (saveState.error.isNotEmpty()) {
-            // 面板在黑色画面上，用亮红而非 colorScheme.error（浅色主题下 error 是暗红，黑底看不清）
-            Text(saveState.error, color = DashcamError, style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.End)
         }
     }
 }

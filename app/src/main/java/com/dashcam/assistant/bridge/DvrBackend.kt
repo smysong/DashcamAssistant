@@ -109,7 +109,9 @@ class HttpBackend(private val host: String, private val port: Int = 80) : DvrBac
     private val cacheLock = Any()
     private val listCache = mutableMapOf<String, List<MediaItem>>()
     private val listCacheTs = mutableMapOf<String, Long>()
-    private val LIST_CACHE_MS = 30_000L
+    // 列表缓存时长：DVR 目录为 Cherokee 递归索引，扫描偏慢且受嵌入式服务器并发限制，
+    // 在 2.4G WiFi(≈200M) 下网络并非瓶颈，故拉长 TTL 减少重复全量扫描。
+    private val LIST_CACHE_MS = 120_000L
 
     /** 取得（必要时扫描并缓存）某类型的全量媒体列表。 */
     private suspend fun collectAll(type: String): List<MediaItem> {

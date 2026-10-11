@@ -11,10 +11,13 @@ import androidx.media3.datasource.cache.SimpleCache
 import java.io.File
 
 internal object MediaCachePolicy {
-    const val PLAYBACK_CACHE_MAX_BYTES = 256L * 1024 * 1024
+    const val PLAYBACK_CACHE_MAX_BYTES = 512L * 1024 * 1024
     const val MIN_FREE_BYTES_FOR_CACHING = 32L * 1024 * 1024
-    const val THUMBNAIL_CACHE_MAX_BYTES = 64L * 1024 * 1024
+    const val THUMBNAIL_CACHE_MAX_BYTES = 256L * 1024 * 1024
     const val MAX_THUMBNAIL_SOURCE_BYTES = 24L * 1024 * 1024
+    // 视频缩略图取首帧时，经 Range 请求最多拉取的字节数：足以覆盖绝大多数 MP4 的首个关键帧，
+    // 又避免 MediaMetadataRetriever 对远程直链从头拉整段（DVR 是嵌入式小服务器，整段拉取既慢又压并发）。
+    const val MAX_THUMBNAIL_FETCH_BYTES = 8L * 1024 * 1024
     const val MAX_FULL_PHOTO_SOURCE_BYTES = 64L * 1024 * 1024
     const val THUMBNAIL_MAX_DIMENSION = 360
     const val FULL_PHOTO_MAX_DIMENSION = 1600
@@ -34,11 +37,26 @@ internal object MediaPlaybackDataSource {
     @Volatile
     private var cache: SimpleCache? = null
 
+    /** 清空回放磁盘缓存目录并释放 SimpleCache 实例（设置页「清除回放缓存」调用）。返回释放的字节数。 */
+    fun clearCache(context: Context): Long {
+        val dir = File(context.applicationContext.cacheDir, PLAYBACK_CACHE_DIR)
+        cache?.let {
+            try { it.release() } catch (_: Exception) { }
+            cache = null
+        }
+        var freed = 0L
+        if (dir.exists()) {
+            freed = dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+            dir.deleteRecursively()
+        }
+        return freed
+    }
+
     fun create(context: Context, onCacheWarning: (String) -> Unit = {}): PlaybackDataSource {
         val appContext = context.applicationContext
         val httpFactory = DefaultHttpDataSource.Factory()
-            .setConnectTimeoutMs(8_000)
-            .setReadTimeoutMs(30_000)
+            .setConnectTimeoutMs(10_000)
+            .setReadTimeoutMs(60_000)
             .setAllowCrossProtocolRedirects(true)
         val upstreamFactory = DefaultDataSource.Factory(appContext, httpFactory)
         val cacheDirectory = File(appContext.cacheDir, PLAYBACK_CACHE_DIR)

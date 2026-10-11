@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -28,14 +29,18 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.LiveTv
+import androidx.compose.material.icons.filled.QrCode
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Wifi
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
-import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -49,6 +54,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.style.TextAlign
@@ -138,8 +144,21 @@ class MainActivity : ComponentActivity() {
 
         Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             BoxWithConstraints(Modifier.fillMaxSize()) {
-                // 首页三档自适应：手机竖屏单栏、平板竖屏单栏放宽、平板横屏/车机双栏
-                val metrics = dashcamLayoutMetrics(dashcamWindowClass())
+                val windowClass = dashcamWindowClass()
+                val isCar = windowClass == DashcamWindowClass.EXPANDED
+                var showQrDialog by remember { mutableStateOf(false) }
+                var showSettings by remember { mutableStateOf(false) }
+                val metrics = dashcamLayoutMetrics(windowClass)
+                // 捕获到局部变量，供深层嵌套的 isCar 布局块使用（避免隐式接收者歧义）
+                val screenMaxHeight = maxHeight
+                val compact = windowClass == DashcamWindowClass.COMPACT
+                val titleStyle = when (windowClass) {
+                    DashcamWindowClass.COMPACT -> MaterialTheme.typography.titleMedium
+                    DashcamWindowClass.MEDIUM -> MaterialTheme.typography.headlineMedium
+                    else -> MaterialTheme.typography.headlineLarge
+                }
+                val subtitleStyle = if (compact) MaterialTheme.typography.labelMedium else MaterialTheme.typography.bodyLarge
+                val homeSpacing = if (compact) 12.dp else 20.dp
                 Column(
                     Modifier
                         .fillMaxSize()
@@ -149,56 +168,77 @@ class MainActivity : ComponentActivity() {
                             horizontal = metrics.homeHorizontalPadding,
                             vertical = metrics.homeVerticalPadding
                         ),
-                    verticalArrangement = Arrangement.spacedBy(20.dp)
+                    verticalArrangement = Arrangement.spacedBy(homeSpacing)
                 ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("行车记录仪助手", style = MaterialTheme.typography.headlineLarge)
-                        Text("设备状态与媒体访问", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyLarge)
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("行车记录仪助手", style = titleStyle)
+                            Text("设备状态与媒体访问", color = MaterialTheme.colorScheme.onSurfaceVariant, style = subtitleStyle)
+                        }
+                        IconButton(onClick = { showSettings = true }, modifier = Modifier.size(44.dp)) {
+                            Icon(Icons.Filled.Settings, contentDescription = "设置", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                     }
-                    ConnectionCard(status = status, onRescan = {
+                    ConnectionCard(status = status, compact = !isCar, onRescan = {
                         AppLog.i("车机", "触发重新扫描")
                         BridgeState.onReconnect?.invoke()
                     })
-                    if (metrics.twoPaneHome) {
+                    if (isCar) {
+                        // 注意：不能用 IntrinsicSize.Min —— 它会向子节点发起固有尺寸测量，
+                        // 而 PairingCard 内的 BoxWithConstraints(SubcomposeLayout) 不支持固有测量，
+                        // 会导致启动即 IllegalStateException 崩溃。改为用确定高度让两侧 fillMaxHeight 等高对齐。
+                        val carRowHeight = minOf(screenMaxHeight * 0.5f, 300.dp).coerceAtLeast(240.dp)
                         Row(
-                            Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(20.dp),
-                            verticalAlignment = Alignment.Top
+                            Modifier.fillMaxWidth().height(carRowHeight),
+                            horizontalArrangement = Arrangement.spacedBy(20.dp)
                         ) {
-                            PairingCard(qr, bridgeUrl, Modifier.weight(1.1f))
-                            Column(Modifier.weight(0.9f), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                            PairingCard(qr, bridgeUrl, Modifier.weight(1.1f).fillMaxHeight())
+                            Column(Modifier.weight(0.9f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                                 HomeActionCard(
                                     title = "媒体库",
                                     description = "浏览录像、紧急录像与照片",
                                     icon = Icons.Filled.Storage,
+                                    modifier = Modifier.weight(1f),
                                     onClick = { AppLog.i("车机", "打开媒体管理"); onManage() }
                                 )
                                 HomeActionCard(
                                     title = "实时预览",
                                     description = "查看当前 DVR 直播画面",
                                     icon = Icons.Filled.LiveTv,
+                                    modifier = Modifier.weight(1f),
                                     onClick = onLive
                                 )
                             }
                         }
                     } else {
-                        PairingCard(qr, bridgeUrl, Modifier.fillMaxWidth())
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            HomeActionCard(
-                                title = "媒体库",
-                                description = "录像与照片",
-                                icon = Icons.Filled.Storage,
-                                modifier = Modifier.weight(1f),
-                                onClick = { AppLog.i("车机", "打开媒体管理"); onManage() }
-                            )
-                            HomeActionCard(
-                                title = "实时预览",
-                                description = "查看直播画面",
-                                icon = Icons.Filled.LiveTv,
-                                modifier = Modifier.weight(1f),
-                                onClick = onLive
-                            )
-                        }
+                        // 手机 / 平板竖屏：三个入口统一为全宽横排卡片、纵向排列，扫码连接放最后；
+                        // 默认不展示二维码大图，点击「扫码连接」卡片弹出二维码对话框。
+                        // 车机（大屏横屏）仍保留原双栏 + 内联二维码布局（见 isCar 分支）。
+                        HomeActionCard(
+                            title = "媒体库",
+                            description = "浏览录像、紧急录像与照片",
+                            icon = Icons.Filled.Storage,
+                            compact = compact,
+                            onClick = { AppLog.i("车机", "打开媒体管理"); onManage() }
+                        )
+                        HomeActionCard(
+                            title = "实时预览",
+                            description = "查看当前 DVR 直播画面",
+                            icon = Icons.Filled.LiveTv,
+                            compact = compact,
+                            onClick = onLive
+                        )
+                        HomeActionCard(
+                            title = "扫码连接",
+                            description = "点击显示手机连接二维码",
+                            icon = Icons.Filled.QrCode,
+                            compact = compact,
+                            onClick = { showQrDialog = true }
+                        )
                     }
                     // 底部居中的版权与版本信息：版本号由 server_build.py 每次构建自增
                     Column(
@@ -220,12 +260,76 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                 }
+                if (showQrDialog) {
+                    QrDialog(bitmap = qr, bridgeUrl = bridgeUrl, onDismiss = { showQrDialog = false })
+                }
+                if (showSettings) {
+                    val ctx = LocalContext.current
+                    SettingsDialog(
+                        context = ctx,
+                        initialPageSize = PageSizePreference.load(ctx),
+                        initialNameMode = MediaNameDisplayPreference.load(ctx),
+                        onPageSizeChange = { },
+                        onNameModeChange = { },
+                        onDismiss = { showSettings = false }
+                    )
+                }
             }
         }
     }
 
     @Composable
-    private fun ConnectionCard(status: DvrStatusUi, onRescan: () -> Unit) {
+    private fun QrDialog(bitmap: Bitmap?, bridgeUrl: String, onDismiss: () -> Unit) {
+        AlertDialog(
+            onDismissRequest = onDismiss,
+            confirmButton = { },
+            containerColor = MaterialTheme.colorScheme.surface,
+            title = { Text("手机扫码连接", style = MaterialTheme.typography.titleLarge) },
+            text = {
+                Column(
+                    Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = Color.White,
+                        // 二维码必须白底黑码才能被扫描，不跟随主题；加描边避免浅色主题下与卡片融合
+                        modifier = Modifier
+                            .size(220.dp)
+                            .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(12.dp))
+                    ) {
+                        if (bridgeUrl.isEmpty()) {
+                            Box(Modifier.fillMaxSize().padding(12.dp), contentAlignment = Alignment.Center) {
+                                Text("等待桥接服务", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelMedium)
+                            }
+                        } else if (bitmap != null) {
+                            Image(bitmap = bitmap.asImageBitmap(), contentDescription = "扫码连接手机网页", modifier = Modifier.padding(12.dp))
+                        } else {
+                            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                            }
+                        }
+                    }
+                    Text(
+                        "在手机浏览器中打开录像与照片媒体库",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodyMedium,
+                        textAlign = TextAlign.Center
+                    )
+                    Text(
+                        "二维码仅在本次服务运行期间有效",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.labelMedium,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            }
+        )
+    }
+
+    @Composable
+    private fun ConnectionCard(status: DvrStatusUi, compact: Boolean = false, onRescan: () -> Unit) {
         val statusColor = when {
             status.connected -> dashcamSuccessColor()
             status.error.isNotEmpty() -> MaterialTheme.colorScheme.error
@@ -238,12 +342,12 @@ class MainActivity : ComponentActivity() {
             border = CardDefaults.outlinedCardBorder()
         ) {
             Row(
-                Modifier.fillMaxWidth().padding(20.dp),
+                Modifier.fillMaxWidth().padding(if (compact) 16.dp else 20.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(16.dp)
+                horizontalArrangement = Arrangement.spacedBy(if (compact) 12.dp else 16.dp)
             ) {
-                Icon(Icons.Filled.Wifi, contentDescription = null, tint = statusColor, modifier = Modifier.size(30.dp))
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Icon(Icons.Filled.Wifi, contentDescription = null, tint = statusColor, modifier = Modifier.size(if (compact) 26.dp else 30.dp))
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text(
                         when {
                             status.connected -> "已连接 DVR"
@@ -251,7 +355,7 @@ class MainActivity : ComponentActivity() {
                             status.error.isNotEmpty() -> "连接遇到问题"
                             else -> "正在搜索附近设备"
                         },
-                        style = MaterialTheme.typography.titleLarge
+                        style = if (compact) MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleLarge
                     )
                     Text(
                         when {
@@ -262,12 +366,24 @@ class MainActivity : ComponentActivity() {
                             else -> "请确认车机与记录仪处于同一可访问网络"
                         },
                         color = if (status.error.isNotEmpty()) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-                        style = MaterialTheme.typography.bodyMedium
+                        style = if (compact) MaterialTheme.typography.labelMedium else MaterialTheme.typography.bodyMedium
                     )
                 }
-                OutlinedButton(onClick = onRescan, modifier = Modifier.height(56.dp)) {
-                    Icon(Icons.Filled.Refresh, contentDescription = null)
-                    Text("重新扫描", modifier = Modifier.padding(start = 8.dp), style = MaterialTheme.typography.labelLarge)
+                if (compact) {
+                    // 手机端：重新扫描缩为纯图标按钮，避免挤压状态文字造成难看换行
+                    IconButton(onClick = onRescan, modifier = Modifier.size(44.dp)) {
+                        Icon(
+                            Icons.Filled.Refresh,
+                            contentDescription = "重新扫描",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                } else {
+                    FilledTonalButton(onClick = onRescan, modifier = Modifier.heightIn(min = 52.dp)) {
+                        Icon(Icons.Filled.Refresh, contentDescription = null)
+                        Text("重新扫描", modifier = Modifier.padding(start = 8.dp), style = MaterialTheme.typography.labelLarge)
+                    }
                 }
             }
         }
@@ -281,7 +397,8 @@ class MainActivity : ComponentActivity() {
             shape = RoundedCornerShape(16.dp),
             border = CardDefaults.outlinedCardBorder()
         ) {
-            BoxWithConstraints(Modifier.fillMaxWidth().padding(20.dp)) {
+            // fillMaxSize + 居中：卡片被拉伸到与右侧等高时，内容在卡片内垂直居中
+            BoxWithConstraints(Modifier.fillMaxSize().padding(20.dp), contentAlignment = Alignment.Center) {
                 val compact = maxWidth < 520.dp
                 val qrSize = if (compact) 160.dp else 192.dp
                 val qr: @Composable () -> Unit = {
@@ -357,11 +474,13 @@ class MainActivity : ComponentActivity() {
         description: String,
         icon: androidx.compose.ui.graphics.vector.ImageVector,
         modifier: Modifier = Modifier,
+        compact: Boolean = false,
         onClick: () -> Unit
     ) {
+        val minHeight = if (compact) 76.dp else 112.dp
         Card(
             onClick = onClick,
-            modifier = modifier.fillMaxWidth().heightIn(min = 112.dp),
+            modifier = modifier.fillMaxWidth().heightIn(min = minHeight),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
             shape = RoundedCornerShape(16.dp),
             border = CardDefaults.outlinedCardBorder()
@@ -369,17 +488,21 @@ class MainActivity : ComponentActivity() {
             // 用 heightIn 与卡片最小高度对齐，使内容在卡片内垂直居中；
             // 不使用 fillMaxSize，避免父层高度无界时把 min 约束撑成无限大
             Row(
-                Modifier.fillMaxWidth().heightIn(min = 112.dp).padding(20.dp),
+                Modifier.fillMaxWidth().heightIn(min = minHeight).padding(if (compact) 14.dp else 20.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(16.dp)
+                horizontalArrangement = Arrangement.spacedBy(if (compact) 12.dp else 16.dp)
             ) {
-                Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(34.dp))
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(title, style = MaterialTheme.typography.titleLarge)
-                    Text(description, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(if (compact) 24.dp else 34.dp))
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(title, style = if (compact) MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleLarge)
+                    Text(
+                        description,
+                        style = if (compact) MaterialTheme.typography.labelMedium else MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
                 // 箭头用次级色 + 标题字号：与右侧标题区分层级，不再抢主标题视觉
-                Text("›", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("›", style = if (compact) MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }

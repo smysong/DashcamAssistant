@@ -60,8 +60,11 @@ internal class ThumbnailDiskCache(
     }
 
     @Synchronized
-    fun clear() {
-        directory.listFiles()?.forEach { it.delete() }
+    fun clear(): Long {
+        val files = directory.listFiles() ?: return 0L
+        val freed = files.sumOf { it.length() }
+        files.forEach { it.delete() }
+        return freed
     }
 
     private fun trim(keep: File?): Long {

@@ -1,6 +1,6 @@
-# 行车记录仪助手
+# 奇瑞原厂行车记录仪助手
 
-车机端 Android 应用，用于行车记录仪（DVR）发现、车内媒体浏览，以及通过手机浏览器访问媒体。
+车机/手机端 Android 应用，用于奇瑞原厂行车记录仪（DVR）发现、车内媒体浏览，以及通过手机浏览器访问媒体。
 
 ## 产品形态
 
@@ -30,14 +30,3 @@ MainActivity / MediaBrowser (Compose)
 
 已配置的媒体目录为 `/SD0/NOR/M_video/`（普通，`NOR_*`）、`/SD0/EVT/M_video/`（紧急，`EVT_*`）与 `/SD0/PHO/M_photo/`（照片，`PHO_*`）；分类依据文件名前缀与路径。DVR 发现监听 UDP 10000/10001，并探测本地子网中的 HTTP 80 与 RTSP 554。观测到的直播地址为 `rtsp://<DVR-IP>/live`；未推断存在任何鉴权或其他设备协议。目录格式、HTTP Range 行为、RTSP 鉴权与编解码需针对各目标机型/固件逐一确认。
 
-## 构建与验证
-
-需要 Android SDK 35、JDK 17 与 Gradle 8.9。仓库**未**内置 Gradle wrapper（构建使用本地/缓存的 Gradle 8.9 发行版）。
-
-```powershell
-gradle :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease
-```
-
-Release 签名是可选的，读取由 `local.properties` 配置的本地、未跟踪 keystore（`DASHCAM_KEYSTORE` 及相关的 store/key 凭据）；keystore 文件与 `local.properties` 均被 Git 忽略。请妥善备份 keystore 及其凭据：后续更新必须使用同一把密钥，重新生成的新密钥将无法作为用旧密钥签名的 APK 的更新被安装。keystore 与凭据均不得进入源码管理或发布产物。
-
-JVM 测试覆盖桥接访问、伪造 DVR 的媒体列表/代理行为、媒体传输、缩略图缓存上限，以及文件名显示格式化。单元/伪造 DVR 测试不能证明与真实 DVR 的兼容性；车机 RTSP 与目标设备编解码支持需要硬件实测验证。
