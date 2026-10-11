@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>行车记录仪助手</title>
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #f2f6f8; --panel: #ffffff; --panel2: #e5edf1; --text: #15232c;
+    --muted: #51626e; --accent: #087e91; --accent-contrast: #ffffff;
+    --accent-soft: #d9f1f4; --connected: #16794d; --connected-soft: #e3f5ed;
+    --emergency: #8a5700; --emergency-soft: #fff1d6;
+    --danger: #b3261e; --danger-soft: #fce8e6; --border: #ccd8de;
+    --radius: 16px; --shadow: 0 8px 24px rgba(21,35,44,.08);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --bg: #0b1118; --panel: #141e28; --panel2: #1c2a36; --text: #f2f6f8;
+      --muted: #a8b6c2; --accent: #35c6d9; --accent-contrast: #06151a;
+      --accent-soft: #15363d; --connected: #38c987; --connected-soft: #123628;
+      --emergency: #f0b34a; --emergency-soft: #392a12;
+      --danger: #f16c68; --danger-soft: #3a1d1b; --border: #2b3b49;
+      --shadow: 0 8px 26px rgba(0,0,0,.22);
+    }
+  }
+  * { box-sizing: border-box; }
+  button, a, select { touch-action: manipulation; }
+  button:focus-visible, a:focus-visible, select:focus-visible {
+    outline: 3px solid var(--accent); outline-offset: 2px;
+  }
+  body { margin: 0; padding: 0 0 env(safe-area-inset-bottom); background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+  header { position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--bg) 92%, transparent);
+    backdrop-filter: blur(12px); padding: 16px max(20px, env(safe-area-inset-left)); border-bottom: 1px solid var(--border); }
+  .title { font-size: 20px; font-weight: 750; letter-spacing: .01em; }
+  .status { font-size: 14px; color: var(--muted); margin-top: 5px; min-height: 20px; }
+  .status .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    background: var(--danger); margin-right: 8px; vertical-align: middle; box-shadow: 0 0 0 4px var(--danger-soft); }
+  .status.ok .dot { background: var(--connected); box-shadow: 0 0 0 4px var(--connected-soft); }
+  .tabs { position: sticky; top: calc(81px + env(safe-area-inset-top)); z-index: 4; display: flex; gap: 8px; padding: 12px max(20px, env(safe-area-inset-left));
+    flex-wrap: nowrap; overflow-x: auto; background: var(--bg); border-bottom: 1px solid var(--border); }
+  /* flex 居中是必须的：min-height 撑高后 block 布局会把文字顶在上方，导致“文字偏上、按钮变形” */
+  .tab { display: inline-flex; align-items: center; justify-content: center; min-height: 48px; padding: 8px 18px;
+    border-radius: 999px; background: var(--panel); color: var(--muted); line-height: 1;
+    border: 1px solid var(--border); cursor: pointer; font-size: 15px; font-weight: 600; white-space: nowrap; user-select: none; transition: .15s; }
+  .tab:hover { color: var(--text); }
+  .tab.active { background: var(--accent); color: var(--accent-contrast); border-color: var(--accent); }
+  main { width: 100%; max-width: 1040px; margin: 0 auto; padding: 20px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 16px; }
+  /* 按日期分栏 */
+  .dayhead { display: flex; align-items: center; gap: 10px; margin: 22px 2px 10px; }
+  .dayhead:first-child { margin-top: 4px; }
+  .daybar { width: 4px; height: 24px; border-radius: 2px; background: var(--accent); flex: none; }
+  .daytitle { font-size: 18px; font-weight: 600; margin: 0; color: var(--text); }
+  .daycount { font-size: 14px; color: var(--muted); }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+    overflow: hidden; position: relative; cursor: pointer; transition: transform .12s, border-color .12s; }
+  .card:hover { transform: translateY(-2px); border-color: var(--accent); box-shadow: var(--shadow); }
+  .thumb { width: 100%; aspect-ratio: 16/9; background: var(--panel2); object-fit: cover; display: block; }
+  .thumb.video { object-fit: contain; background: #05090d; }
+  .play { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
+    width: 46px; height: 46px; border-radius: 50%; background: rgba(0,0,0,.55);
+    display: flex; align-items: center; justify-content: center; pointer-events: none; }
+  .play::after { content: ""; border-left: 16px solid #fff; border-top: 10px solid transparent;
+    border-bottom: 10px solid transparent; margin-left: 4px; }
+  .badge { position: absolute; top: 10px; left: 10px; background: var(--emergency-soft); color:var(--emergency);
+    font-size: 13px; font-weight: 700; padding: 5px 9px; border-radius: 7px; border: 1px solid color-mix(in srgb, var(--emergency) 30%, transparent); }
+  .meta { min-height: 56px; padding: 10px 12px; font-size: 14px; color: var(--muted); display: flex;
+    justify-content: space-between; gap: 8px; align-items: center; }
+  .name { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dl { background: var(--panel2); border: 1px solid var(--border); color: var(--text); border-radius: 8px;
+    min-height: 40px; display: inline-flex; align-items: center; font-size: 13px; font-weight: 600; padding: 5px 12px; text-decoration: none; cursor: pointer; }
+  .dl:hover { border-color: var(--accent); }
+  .empty, .loading { color: var(--muted); padding: 52px 16px; text-align: center; font-size: 15px; }
+  .empty { background: var(--panel); border: 1px dashed var(--border); border-radius: var(--radius); }
+  .loading { min-height: 120px; }
+  /* 分页 */
+  .pager { display: flex; gap: 10px; align-items: center; justify-content: center; padding: 16px 4px; flex-wrap: wrap; color: var(--muted); font-size: 14px; }
+  .pager .pg-size { color: var(--muted); font-size: 14px; }
+  .pager select { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 8px; min-height: 44px; padding: 4px 10px; }
+  .pager button:disabled { opacity: .4; cursor: not-allowed; }
+  /* 全屏弹层 */
+  .overlay { position: fixed; inset: 0; background: rgba(3,8,12,.96); z-index: 20;
+    display: none; align-items: center; justify-content: center; flex-direction: column; padding: max(16px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom)); }
+  .overlay.show { display: flex; }
+  .overlay video, .overlay img { max-width: 100%; max-height: 82vh; background:#000; border-radius: 8px; }
+  .overlay .bar { margin-top: 16px; display: flex; gap: 12px; }
+  .overlay .cap { margin-top: 12px; color: #f2f6f8; font-size: 15px; text-align: center; word-break: break-all; }
+  .overlay .playback-state { min-height: 22px; margin-top: 10px; color: #c0ccd4; font-size: 14px; text-align: center; }
+  /* inline-flex 让 <a> 与 <button> 表现一致（inline 的 <a> 上 min-height 无效会塌陷）；
+     font-family: inherit 修掉浏览器给 <button> 的默认字体，避免与页面字体不一致 */
+  .btn { display: inline-flex; align-items: center; justify-content: center; font-family: inherit;
+    background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    min-height: 48px; padding: 8px 18px; border-radius: 10px; cursor: pointer; font-size: 15px;
+    font-weight: 600; line-height: 1.2; text-decoration: none; }
+  .btn.primary { background: var(--accent); color: var(--accent-contrast); border-color: var(--accent); }
+  .btn:hover { border-color: var(--accent); }
+  .settings { display: flex; align-items: center; gap: 10px; margin: 0 0 16px; color: var(--muted); font-size: 14px; }
+  .settings select { min-height: 44px; max-width: 100%; padding: 6px 10px; border: 1px solid var(--border);
+    border-radius: 8px; color: var(--text); background: var(--panel); }
+  footer { max-width: 1040px; margin: 0 auto; padding: 18px 20px 28px; border-top: 1px solid var(--border);
+    color: var(--muted); text-align: center; font-size: 13px; }
+  footer div + div { margin-top: 4px; }
+  /* 开发者模式面板 */
+  .dev-panel { position: fixed; inset: 0; background: var(--bg); color: var(--text); z-index: 30; display: none;
+    flex-direction: column; padding: max(16px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom)); }
+  .dev-panel.show { display: flex; }
+  .dev-panel h3 { margin: 4px 0 12px; font-size: 16px; font-weight: 700; }
+  .dev-panel .dev-hint { color: var(--muted); font-size: 12px; margin: -6px 0 12px; }
+  .dev-bar { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+  .dev-log { flex: 1; overflow: auto; background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: 10px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.55;
+    white-space: pre-wrap; word-break: break-all; color: #b9c2d0; }
+  @media (min-width: 640px) { .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (min-width: 960px) { .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+  @media (max-width: 480px) {
+    header { padding-top: max(14px, env(safe-area-inset-top)); }
+    .tabs { top: calc(77px + env(safe-area-inset-top)); gap: 6px; }
+    .tab { padding: 8px 14px; font-size: 14px; }
+    main { padding: 16px; }
+    .grid { grid-template-columns: 1fr; gap: 12px; }
+    .pager { gap: 8px; }
+    .pager #pageInfo { width: 100%; text-align: center; order: -1; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="title" id="title">行车记录仪助手</div>
+  <div class="status" id="status" role="status" aria-live="polite"><span class="dot"></span><span id="statusText">连接中…</span></div>
+</header>
+
+<div class="tabs" id="tabs">
+  <div class="tab active" data-tab="video">普通录像</div>
+  <div class="tab" data-tab="event">紧急录像</div>
+  <div class="tab" data-tab="photo">照片</div>
+</div>
+
+<main>
+  <div id="listView">
+    <div class="settings">
+      <label for="nameDisplayMode">文件名显示</label>
+      <select id="nameDisplayMode">
+        <option value="friendly">友好名称</option>
+        <option value="original">原始文件名</option>
+        <option value="both">友好名称 + 原始文件名</option>
+      </select>
+    </div>
+    <div class="loading" id="listState" role="status" aria-live="polite">加载中…</div>
+    <div class="grid" id="grid"></div>
+    <div class="pager" id="pager">
+      <button class="btn" id="prevPage">上一页</button>
+      <span id="pageInfo">第 1 / 1 页</span>
+      <button class="btn" id="nextPage">下一页</button>
+      <span class="pg-size">每页
+        <select id="pageSize">
+          <option value="10" selected>10</option>
+          <option value="15">15</option>
+          <option value="20">20</option>
+        </select>
+      </span>
+    </div>
+  </div>
+</main>
+<footer>
+  <div>©2026 Smysong. All Rights Reserved.</div>
+  <div>行车记录仪助手 | Version：<span id="appVersion">1.0.0</span></div>
+</footer>
+
+<div class="overlay" id="overlay">
+  <div id="overlayMedia"></div>
+  <div class="playback-state" id="playbackState" role="status"></div>
+  <div class="cap" id="overlayCap"></div>
+  <div class="bar">
+    <a class="btn" id="overlayDl" href="#" download>下载</a>
+    <button class="btn" id="overlayClose">关闭</button>
+  </div>
+</div>
+
+<!-- 开发者模式：手机端连续点击标题 5 次进入 -->
+<div class="dev-panel" id="devPanel">
+  <h3>开发者模式 · APP 日志</h3>
+  <div class="dev-hint">连续点击标题 5 次进入/退出；可查看与导出车机 APP 运行日志</div>
+  <div class="dev-bar">
+    <button class="btn" id="devRefresh">刷新</button>
+    <button class="btn" id="devExport">导出日志</button>
+    <button class="btn" id="devClear">清空</button>
+    <button class="btn" id="devClose">关闭</button>
+  </div>
+  <div class="dev-log" id="devLog">加载中…</div>
+</div>
+
+<script>
+const TABS = {
+  video:  { type: "video",  label: "普通录像" },
+  event:  { type: "event",  label: "紧急录像" },
+  photo:  { type: "photo",  label: "照片" }
+};
+let current = "video";
+const $ = id => document.getElementById(id);
+const NAME_MODE_KEY = "mediaNameDisplayMode";
+const validNameModes = ["friendly", "original", "both"];
+let nameDisplayMode = localStorage.getItem(NAME_MODE_KEY);
+if (!validNameModes.includes(nameDisplayMode)) nameDisplayMode = "friendly";
+$("nameDisplayMode").value = nameDisplayMode;
+$("nameDisplayMode").addEventListener("change", event => {
+  nameDisplayMode = validNameModes.includes(event.target.value) ? event.target.value : "friendly";
+  localStorage.setItem(NAME_MODE_KEY, nameDisplayMode);
+  loadList(current, false);
+});
+
+function enc(p){ return encodeURIComponent(p); }
+function fmtSize(b){ if(!b) return ""; const u=["B","KB","MB","GB"]; let i=0; let n=b; while(n>=1024&&i<u.length-1){n/=1024;i++;} return n.toFixed(1)+u[i]; }
+function fmtDur(s){ if(!s) return ""; s=Math.floor(s); const m=Math.floor(s/60); const ss=s%60; return m+":"+String(ss).padStart(2,"0"); }
+
+async function refreshStatus(){
+  try {
+    const r = await fetch("/api/status");
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const j = await r.json();
+    const el = $("status");
+    if (j.ok && j.discovered) { el.classList.add("ok"); $("statusText").textContent = "已连接 DVR：" + (j.dvr||""); }
+    else { el.classList.remove("ok"); $("statusText").textContent = "未连接 DVR（请确认车机与行车记录仪已连接）"; }
+    // 版本号由服务端运行时提供（server_build.py 每次构建自增），取不到时保留占位符
+    if (j.version) $("appVersion").textContent = j.version;
+  } catch(e){ $("status").classList.remove("ok"); $("statusText").textContent = "无法连接车机桥：" + e.message; }
+}
+
+let pageSize = 10;
+let pageOffset = 0;
+let pageTotal = 0;
+let listGeneration = 0;
+
+async function loadList(tab, resetPage){
+  if (resetPage) { pageOffset = 0; pageTotal = 0; updatePager(); }
+  const generation = ++listGeneration;
+  const t = TABS[tab];
+  $("listState").style.display = "block"; $("listState").textContent = "加载中…";
+  $("grid").innerHTML = "";
+  try {
+    const r = await fetch("/api/list?type=" + t.type + "&offset=" + pageOffset + "&limit=" + pageSize);
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const j = await r.json();
+    if (generation !== listGeneration || current !== tab) return;
+    if (!j.ok) { pageOffset = 0; pageTotal = 0; updatePager(); showListError(j.error || "加载失败"); return; }
+    pageTotal = j.total || 0;
+    const items = j.items || [];
+    $("listState").style.display = items.length ? "none" : "block";
+    $("listState").textContent = items.length ? "" : ("暂无" + t.label);
+    renderGrouped(items, t); // 按日期分栏渲染（后端已按时间倒序，同一天连续）
+    updatePager();
+  } catch(e){
+    if (generation === listGeneration && current === tab) {
+      pageOffset = 0; pageTotal = 0; updatePager();
+      showListError("加载失败：" + e.message);
+    }
+  }
+}
+
+function showListError(message){
+  const state = $("listState");
+  state.replaceChildren(document.createTextNode(message + " "));
+  const retry = document.createElement("button");
+  retry.className = "btn";
+  retry.textContent = "重新加载";
+  retry.addEventListener("click", () => loadList(current, false));
+  state.appendChild(retry);
+  state.style.display = "block";
+}
+
+function updatePager(){
+  const totalPages = Math.max(1, Math.ceil(pageTotal / pageSize));
+  const cur = Math.floor(pageOffset / pageSize) + 1;
+  $("pageInfo").textContent = "第 " + cur + " / " + totalPages + " 页（共 " + pageTotal + "）";
+  $("prevPage").disabled = pageOffset <= 0;
+  $("nextPage").disabled = !(pageOffset + pageSize < pageTotal);
+}
+$("prevPage").addEventListener("click", () => { if (pageOffset - pageSize >= 0){ pageOffset -= pageSize; loadList(current, false); } });
+$("nextPage").addEventListener("click", () => { if (pageOffset + pageSize < pageTotal){ pageOffset += pageSize; loadList(current, false); } });
+$("pageSize").addEventListener("change", e => { pageSize = parseInt(e.target.value, 10) || 10; pageOffset = 0; loadList(current, false); });
+
+function fmtDvrName(name){
+  if(!name) return "";
+  const base = name.replace(/\.[^.]+$/, "");
+  let y,mo,d,hh,mm,ss;
+  const m = base.match(/(\d{4})(\d{2})(\d{2})[_.\s-]*(\d{2})(\d{2})(\d{2})/);
+  if(m){ [,y,mo,d,hh,mm,ss] = m; }
+  else {
+    const dm = base.match(/(\d{4})(\d{2})(\d{2})/);
+    const tm = base.match(/(\d{2})(\d{2})(\d{2})/);
+    if(dm && tm){ y=dm[1];mo=dm[2];d=dm[3];hh=tm[1];mm=tm[2];ss=tm[3]; }
+    else return name;
+  }
+  y=+y;mo=+mo;d=+d;hh=+hh;mm=+mm;ss=+ss;
+  if(mo<1||mo>12||d<1||d>31||hh>23||mm>59||ss>59) return name;
+  const wk=["周日","周一","周二","周三","周四","周五","周六"][new Date(y,mo-1,d).getDay()];
+  const p=n=>String(n).padStart(2,"0");
+  return `${y}-${p(mo)}-${p(d)} ${wk} ${p(hh)}:${p(mm)}:${p(ss)}`;
+}
+
+function displayName(original){
+  const source = String(original || "");
+  const friendly = fmtDvrName(source) || source;
+  if (nameDisplayMode === "original") return source || friendly;
+  if (nameDisplayMode === "both" && friendly && friendly.toLowerCase() !== source.toLowerCase()) {
+    return friendly + " · " + source;
+  }
+  return friendly || original;
+}
+
+function dateKeyOf(name){
+  const base = String(name || "").replace(/\.[^.]+$/, "");
+  const m = base.match(/(\d{4})(\d{2})(\d{2})/);
+  return m ? (m[1] + "-" + m[2] + "-" + m[3]) : "undated";
+}
+function dateLabel(key){
+  if (key === "undated") return "未标注日期";
+  const p = n => String(n).padStart(2, "0");
+  const y = +key.slice(0,4), mo = +key.slice(5,7), d = +key.slice(8,10);
+  const wk = ["周日","周一","周二","周三","周四","周五","周六"][new Date(y, mo - 1, d).getDay()];
+  return `${y}年${p(mo)}月${p(d)}日 ${wk}`;
+}
+function renderGrouped(items, t){
+  const host = $("grid");
+  let current = null;
+  for (const it of items){
+    const key = dateKeyOf(it.name);
+    if (!current || current.key !== key){
+      const head = document.createElement("div"); head.className = "dayhead";
+      const bar = document.createElement("span"); bar.className = "daybar";
+      const title = document.createElement("h2"); title.className = "daytitle"; title.textContent = dateLabel(key);
+      const count = document.createElement("span"); count.className = "daycount";
+      head.append(bar, title, count);
+      const sub = document.createElement("div"); sub.className = "grid";
+      host.append(head, sub);
+      current = { key: key, sub: sub, count: count, n: 0 };
+    }
+    renderCard(it, t, current.sub);
+    current.n += 1;
+    current.count.textContent = current.n + " 项";
+  }
+}
+
+function renderCard(it, t, container){
+  const card = document.createElement("div"); card.className = "card";
+  const isVideo = it.type !== "photo";
+  const thumb = it.thumb || ("/api/thumb?path=" + enc(it.path));
+  if (t.type === "event") {
+    const badge = document.createElement("div");
+    badge.className = "badge"; badge.textContent = "紧急";
+    card.appendChild(badge);
+  }
+  const image = document.createElement("img");
+  image.className = isVideo ? "thumb video" : "thumb";
+  image.loading = "lazy"; image.alt = it.name || ""; image.src = thumb;
+  card.appendChild(image);
+  if (isVideo) {
+    const play = document.createElement("div"); play.className = "play"; card.appendChild(play);
+  }
+  const meta = document.createElement("div"); meta.className = "meta";
+  const name = document.createElement("span"); name.className = "name";
+  name.textContent = displayName(it.name); name.title = it.name || "";
+  const detail = document.createElement("span");
+  detail.textContent = isVideo ? (fmtDur(it.duration) || fmtSize(it.size)) : fmtSize(it.size);
+  const download = document.createElement("a"); download.className = "dl";
+  download.href = "/api/file?path=" + enc(it.path); download.setAttribute("download", it.name || "file");
+  download.textContent = "下载";
+  meta.append(name, detail, download); card.appendChild(meta);
+  card.addEventListener("click", e => {
+    if (e.target.classList.contains("dl")) return; // 下载按钮不触发预览
+    openOverlay(it, isVideo);
+  });
+  (container || $("grid")).appendChild(card);
+}
+
+function openOverlay(it, isVideo){
+  clearOverlayMedia();
+  const src = "/api/play?path=" + enc(it.path);
+  const media = isVideo ? document.createElement("video") : document.createElement("img");
+  media.controls = isVideo;
+  media.playsInline = true;
+  media.preload = isVideo ? "metadata" : "auto";
+  media.alt = isVideo ? "" : it.name;
+  media.src = src;
+  if (isVideo) {
+    media.addEventListener("loadstart", () => { $("playbackState").textContent = "正在加载录像…"; });
+    media.addEventListener("waiting", () => { $("playbackState").textContent = "录像缓冲中…"; });
+    media.addEventListener("playing", () => { $("playbackState").textContent = ""; });
+    media.addEventListener("error", () => {
+      $("playbackState").textContent = "录像读取失败；可能是 DVR 连接中断或浏览器不支持该视频编码，请下载后用播放器打开。";
+    });
+  } else {
+    media.addEventListener("load", () => { $("playbackState").textContent = ""; });
+    media.addEventListener("error", () => { $("playbackState").textContent = "图片读取失败，请检查 DVR 连接后重试。"; });
+  }
+  $("overlayMedia").replaceChildren(media);
+  $("playbackState").textContent = isVideo ? "正在加载录像…" : "正在加载图片…";
+  $("overlayDl").href = "/api/file?path=" + enc(it.path);
+  $("overlayDl").setAttribute("download", it.name || "file");
+  $("overlayCap").textContent = displayName(it.name);
+  $("overlay").classList.add("show");
+  if (isVideo) media.play().catch(() => { $("playbackState").textContent = "点击播放按钮开始播放"; });
+}
+function clearOverlayMedia(){
+  const video = $("overlayMedia").querySelector("video");
+  if (video) { video.pause(); video.removeAttribute("src"); video.load(); }
+  const image = $("overlayMedia").querySelector("img");
+  if (image) image.removeAttribute("src");
+  $("overlayMedia").replaceChildren();
+}
+function closeOverlay(){
+  clearOverlayMedia();
+  $("playbackState").textContent = "";
+  $("overlay").classList.remove("show");
+}
+$("overlayClose").addEventListener("click", closeOverlay);
+$("overlay").addEventListener("click", e => { if (e.target === $("overlay")) closeOverlay(); });
+window.addEventListener("pagehide", closeOverlay);
+
+/* ---- 切换分页 ---- */
+$("tabs").addEventListener("click", e => {
+  const tab = e.target.closest(".tab"); if (!tab) return;
+  if (tab.dataset.tab === current) return;
+  document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+  tab.classList.add("active");
+  const name = tab.dataset.tab;
+  current = name;
+  loadList(name, true);
+});
+
+/* ---- 开发者模式：连续点击标题 5 次进入/退出 ---- */
+let devTaps = 0, devTapTimer = null;
+$("title").addEventListener("click", () => {
+  devTaps++;
+  clearTimeout(devTapTimer);
+  devTapTimer = setTimeout(() => { devTaps = 0; }, 2500);
+  if (devTaps >= 5) { devTaps = 0; toggleDev(); }
+});
+function toggleDev() {
+  const p = $("devPanel");
+  if (p.classList.contains("show")) p.classList.remove("show");
+  else { p.classList.add("show"); loadDevLog(); }
+}
+async function loadDevLog() {
+  try {
+    const r = await fetch("/api/log"); const j = await r.json();
+    const lines = (j.ok && j.lines && j.lines.length) ? j.lines : ["（暂无日志）"];
+    const el = $("devLog");
+    el.textContent = lines.join("\n");
+    el.scrollTop = el.scrollHeight;
+  } catch (e) {
+    $("devLog").textContent = "加载失败：" + e.message;
+  }
+}
+$("devRefresh").addEventListener("click", loadDevLog);
+$("devClose").addEventListener("click", () => $("devPanel").classList.remove("show"));
+$("devExport").addEventListener("click", () => { window.location.href = "/api/log/download"; });
+$("devClear").addEventListener("click", async () => {
+  try { await fetch("/api/log", { method: "POST" }); loadDevLog(); } catch (e) {}
+});
+
+/* 初始化 */
+refreshStatus(); loadList("video", true);
+setInterval(refreshStatus, 5000);
+</script>
+</body>
+</html>

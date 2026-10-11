@@ -1,0 +1,30 @@
+# Signing keys & local properties (NEVER commit)
+local.properties
+*.jks
+*.keystore
+*.p12
+*.pfx
+
+# Build outputs / caches
+build/
+.kotlin/
+.gradle/
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aar
+*.ap_
+*.aab
+output.json
+
+# Local build/tooling scripts (not part of shipped source)
+/tools/
+
+# IDE
+*.iml
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

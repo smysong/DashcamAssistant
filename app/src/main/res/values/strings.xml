@@ -1,0 +1,19 @@
+<resources>
+    <string name="app_name">行车记录仪助手</string>
+    <string name="status_waiting">等待连接…</string>
+    <string name="status_connected">已连接行车记录仪</string>
+    <string name="status_offline">未连接（请确认车机与记录仪在同一网络）</string>
+    <string name="scan_tip">手机扫描上方二维码，在浏览器中管理录像</string>
+    <string name="reconnect">重新连接</string>
+    <string name="dvr_label">记录仪地址</string>
+    <string name="mode1_hint">若记录仪为热点模式，地址回退 192.168.42.1</string>
+    <string name="channel_normal">普通录像</string>
+    <string name="channel_event">紧急录像</string>
+    <string name="channel_photo">照片</string>
+    <string name="setting_live">直播预览</string>
+    <string name="setting_delete_confirm">删除二次确认</string>
+    <string name="setting_auto_rotate">自动横竖屏</string>
+    <string name="setting_night">跟随系统日间/夜间</string>
+    <string name="notification_title">行车记录仪助手运行中</string>
+    <string name="notification_text">桥接服务已启动，手机可扫码管理录像</string>
+</resources>

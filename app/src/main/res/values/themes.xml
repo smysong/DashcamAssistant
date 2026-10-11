@@ -1,0 +1,18 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!--
+      View 层主题：只负责启动窗口与系统栏的初始配色（Material3 DayNight，随系统深色/浅色切换）。
+      Compose 启动后会由 DashcamAssistantTheme 的 ApplySystemBars 再按当前配色方案精确对齐一次：
+      背景 = 当前配色方案 background、图标文字 = 浅色主题深色 / 深色主题浅色。
+    -->
+    <style name="Theme.DashcamAssistant" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="android:windowBackground">@color/dashcam_background</item>
+        <item name="android:statusBarColor">@color/dashcam_background</item>
+        <item name="android:navigationBarColor">@color/dashcam_background</item>
+        <!-- 浅色主题：状态栏/导航栏图标与文字用深色 -->
+        <item name="android:windowLightStatusBar" tools:targetApi="23">true</item>
+        <item name="android:windowLightNavigationBar" tools:targetApi="27">true</item>
+        <!-- 关闭系统强制对比度，避免三键导航条被叠灰底而与内容区不一致 -->
+        <item name="android:enforceNavigationBarContrast" tools:targetApi="29">false</item>
+        <item name="android:enforceStatusBarContrast" tools:targetApi="29">false</item>
+    </style>
+</resources>

@@ -1,0 +1,12 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- 深色模式覆盖：背景取深色（由 colors.xml 的 night 版本提供），图标与文字恢复为浅色。 -->
+    <style name="Theme.DashcamAssistant" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="android:windowBackground">@color/dashcam_background</item>
+        <item name="android:statusBarColor">@color/dashcam_background</item>
+        <item name="android:navigationBarColor">@color/dashcam_background</item>
+        <item name="android:windowLightStatusBar" tools:targetApi="23">false</item>
+        <item name="android:windowLightNavigationBar" tools:targetApi="27">false</item>
+        <item name="android:enforceNavigationBarContrast" tools:targetApi="29">false</item>
+        <item name="android:enforceStatusBarContrast" tools:targetApi="29">false</item>
+    </style>
+</resources>

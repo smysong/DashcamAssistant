@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 与 Compose 的 GraphiteColorScheme 保持一致（深色模式） -->
+    <color name="dashcam_background">#0B1118</color>
+    <color name="dashcam_surface">#141E28</color>
+</resources>

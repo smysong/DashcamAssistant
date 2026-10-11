@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 与 Compose 的 IceColorScheme 保持一致，供 View 主题（启动窗口/系统栏）使用 -->
+    <color name="dashcam_background">#F2F6F8</color>
+    <color name="dashcam_surface">#FFFFFF</color>
+</resources>
