@@ -95,6 +95,16 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
+
+    // 自定义 APK 输出文件名：DashcamAssistant-<版本号>-release.apk（取代默认 app-release.apk；
+    // 打 v* 标签触发云端构建时自动带版本号）
+    applicationVariants.all {
+        outputs.all {
+            (this as? com.android.build.gradle.api.ApkVariantOutput)?.let {
+                it.outputFileName = "DashcamAssistant-${versionName}-release.apk"
+            }
+        }
+    }
 }
 
 dependencies {
