@@ -31,6 +31,10 @@ jobs:
       KEY_STORE_PASSWORD: ${{ secrets.KEY_STORE_PASSWORD }}
       KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
       ANDROID_HOME: ${{ github.workspace }}/android-sdk
+      # GitHub 托管的 runner 已预置一份 SDK 并导出为 ANDROID_SDK_ROOT；
+      # 若两个变量指向不同路径，AGP 会报“SDK 路径冲突”而失败。
+      # 这里把两者指向同一目录，消除冲突。
+      ANDROID_SDK_ROOT: ${{ github.workspace }}/android-sdk
     steps:
       - name: Checkout
         uses: actions/checkout@v4
