@@ -135,6 +135,16 @@ fun SettingsDialog(
                             "当前版本：v$curVersion（构建号 $curCode）",
                             style = MaterialTheme.typography.bodyMedium
                         )
+                        // 已检测到新版本：展示最新版本，并将按钮切换为「立即更新」
+                        // 注意：此处必须快照为非委托局部 val，否则在 if (!= null) 内无法智能转换
+                        val avail = UpdateManager.updateAvailableState.value
+                        if (avail != null) {
+                            Text(
+                                "最新版本：v${avail.versionName}（构建号 ${avail.versionCode}）",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
                         // 自动检查更新开关（持久化）
                         var autoCheck by remember { mutableStateOf(UpdateManager.isAutoCheckEnabled(context)) }
                         androidx.compose.foundation.layout.Row(
@@ -151,26 +161,34 @@ fun SettingsDialog(
                                 }
                             )
                         }
-                        FilledTonalButton(
-                            onClick = {
-                                checking = true
-                                scope.launch {
-                                    when (val r = UpdateCenter.check(context)) {
-                                        UpdateCenter.CheckResult.NoUpdate -> {
-                                            UpdateManager.clearAvailable()
-                                            Toast.makeText(context, "已是最新版本", Toast.LENGTH_SHORT).show()
+                        if (avail != null) {
+                            // 发现新版本：直接弹出升级流程（下载 + SHA-256 校验 + 安装）
+                            FilledTonalButton(
+                                onClick = { UpdateManager.showManual(avail) },
+                                modifier = Modifier.fillMaxWidth()
+                            ) { Text("立即更新") }
+                        } else {
+                            FilledTonalButton(
+                                onClick = {
+                                    checking = true
+                                    scope.launch {
+                                        when (val r = UpdateCenter.check(context)) {
+                                            UpdateCenter.CheckResult.NoUpdate -> {
+                                                UpdateManager.clearAvailable()
+                                                Toast.makeText(context, "已是最新版本", Toast.LENGTH_SHORT).show()
+                                            }
+                                            UpdateCenter.CheckResult.Error ->
+                                                Toast.makeText(context, "检查更新失败，请稍后重试", Toast.LENGTH_SHORT).show()
+                                            is UpdateCenter.CheckResult.Available ->
+                                                UpdateManager.showManual(r.latest)
                                         }
-                                        UpdateCenter.CheckResult.Error ->
-                                            Toast.makeText(context, "检查更新失败，请稍后重试", Toast.LENGTH_SHORT).show()
-                                        is UpdateCenter.CheckResult.Available ->
-                                            UpdateManager.showManual(r.latest)
+                                        checking = false
                                     }
-                                    checking = false
-                                }
-                            },
-                            enabled = !checking,
-                            modifier = Modifier.fillMaxWidth()
-                        ) { Text(if (checking) "检查中…" else "检查更新") }
+                                },
+                                enabled = !checking,
+                                modifier = Modifier.fillMaxWidth()
+                            ) { Text(if (checking) "检查中…" else "检查更新") }
+                        }
                     }
                 }
             }
