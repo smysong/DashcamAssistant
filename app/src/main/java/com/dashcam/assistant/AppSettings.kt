@@ -58,6 +58,8 @@ fun SettingsDialog(
     // 检查更新相关状态
     val scope = rememberCoroutineScope()
     var checking by remember { mutableStateOf(false) }
+    var downloading by remember { mutableStateOf(false) }
+    var downloadProgress by remember { mutableStateOf(0) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -162,11 +164,25 @@ fun SettingsDialog(
                             )
                         }
                         if (avail != null) {
-                            // 发现新版本：直接弹出升级流程（下载 + SHA-256 校验 + 安装）
+                            // 发现新版本：点击「立即更新」直接触发 下载 + SHA-256 校验 + 安装，
+                            // 不再二次弹出「发现新版本」确认弹窗。
                             FilledTonalButton(
-                                onClick = { UpdateManager.showManual(avail) },
+                                onClick = {
+                                    downloading = true
+                                    downloadProgress = 0
+                                    scope.launch {
+                                        val ok = UpdateCenter.downloadAndInstall(context, avail) { p ->
+                                            downloadProgress = p
+                                        }
+                                        downloading = false
+                                        if (!ok) {
+                                            Toast.makeText(context, "更新包下载或校验失败", Toast.LENGTH_LONG).show()
+                                        }
+                                    }
+                                },
+                                enabled = !downloading,
                                 modifier = Modifier.fillMaxWidth()
-                            ) { Text("立即更新") }
+                            ) { Text(if (downloading) "下载中… $downloadProgress%" else "立即更新") }
                         } else {
                             FilledTonalButton(
                                 onClick = {
