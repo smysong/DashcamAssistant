@@ -370,7 +370,9 @@ class HttpServer(
         val b = backend ?: return@runBlocking JSONObject().put("ok", false).put("error", "未连接 DVR").toString()
         if (!b.isReady()) return@runBlocking JSONObject().put("ok", false).put("error", "未连接 DVR").toString()
         try {
-            val page = b.listMediaPaged(type, offset, limit)
+            // A：先读本地列表磁盘缓存秒回（首屏即时渲染），无缓存再走 listMediaPaged 全量扫描并落盘；
+            // 与车机原生 MediaBrowser.loadPage 的两段式加载对齐。
+            val page = b.getCachedListPage(type, offset, limit) ?: b.listMediaPaged(type, offset, limit)
             JSONObject().apply {
                 put("ok", true)
                 put("type", type)

@@ -2,7 +2,7 @@
 
 本项目所有重要变更均记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [1.0.3] - 2026-10-11
+## [1.0.4] - 2026-10-13
 
 > 本版本聚焦「手机端首页与媒体库体验」「播放器控制能力」「下载与缓存健壮性」三大方向，并修复了若干影响真机使用的缺陷。
 
@@ -20,6 +20,7 @@
 - **缩略图 / 列表 / 缓冲性能**：磁盘缓存上限提升（回放缓存 512MB / 缩略图缓存 256MB）；视频缩略图改用 Range 封顶拉取（≤8MB）避免拉整段；DVR 索引扫描缓存 30s→120s。
 - **缩略图优先使用 DVR 端直链**：新增 `DvrBackend.dvrThumbnailUrl/fetchThumbnail`，按命名规则（原文件 `/SD0/<CAT>/M_*/X.MP4` → 缩略图 `/SD0/<CAT>/Thumb/XT.JPG`）推导并下载 DVR 端缩略图；命中即跳过客户端取帧/降采样（更省流量、更快），下载或解码失败自动回退现有生成逻辑。
 - **大目录（>100 文件）加载优化（反馈②，A+B+C 组合）**：① **列表磁盘缓存**——全量枚举结果 JSON 落盘（`cacheDir/dashcam_list_<host>_<type>.json`），冷启动直接切片即时渲染（秒出列表），后台再静默 `listMediaPaged` 刷新覆盖，仅当无缓存且后台异常才显示加载/错误态；② **缩略图优先级队列**——`PriorityBlockingQueue` + 4 个 worker 协程，最新（列表靠前）条目优先生成、较旧/离屏条目排队，避免一次性突发请求压垮 DVR 并发，任务取消经 `CompletableDeferred` 传播不泄漏；③ **分类根目录并行扫描**——`collectAll` 对 `/SD0/NOR`、`/SD0/EVT`、`/SD0/PHO` 等根目录 `async` 并发采集（`Semaphore(4)` 限并发）。三项结合后，百级以上媒体量从「整屏转圈」变为「列表秒开 + 缩略图按序填充」。
+- **网页端（手机扫码）逻辑与原生端同步**：`MobileThumbnailService` 接入反馈①的 DVR 端缩略图直链（命中即跳过客户端取帧/降采样，失败回退）；`HttpServer /api/list` 接入列表磁盘缓存（`getCachedListPage` 先读盘秒回，无缓存再 `listMediaPaged`），与车机两段式加载对齐。此前网页端漏接这两处优化，现已补齐。
 - **视频缓冲参数上调**，起播更快更稳；HTTP 读超时放宽至 60s。
 
 ### 修复
@@ -34,6 +35,8 @@
 - 本地服务器构建与 GitHub 云端构建统一使用 `dashcam-release.jks` 签名，证书一致。
 - APK 输出文件名统一为 `DashcamAssistant-<version>-release.apk`。
 - 仅 `v*` 标签触发云端签名构建与发版，`push main` 不再自动构建。
+- 版本号升 **1.0.4**，构建号（versionCode）同步为 **4**。
+- 本机模拟 DVR 调试工具 `tools/mock_dvr.py` 增强：`--count` 合成大目录（验证 >100 文件场景）、DVR 缩略图直链端点（`/SD0/<CAT>/Thumb/<stem>T.JPG`，纯 Python 生成 PNG，按分类配色）、请求日志与 `--slow-list/--slow-thumb/--latency/--thumb-fail-rate/--no-thumbs` 延迟与回退开关，便于验证 A+B+C 与反馈①。
 
 ## [1.0.2] - 2026-10 月初
 
@@ -49,6 +52,6 @@
 - 通过 GitHub Secrets（SIGNING_KEY 等）注入签名，产出已签名 APK 并自动发 Release。
 - 修复若干 CI 配置问题（setup-android 失效、SDK 路径冲突、secrets 上下文误用）。
 
-[1.0.3]: https://github.com/smysong/DashcamAssistant/releases/tag/v1.0.3
+[1.0.4]: https://github.com/smysong/DashcamAssistant/releases/tag/v1.0.4
 [1.0.2]: https://github.com/smysong/DashcamAssistant/releases/tag/v1.0.2
 [1.0.1]: https://github.com/smysong/DashcamAssistant/releases/tag/v1.0.1

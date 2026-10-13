@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.os.Build
+import com.dashcam.assistant.AppLog
 import com.dashcam.assistant.LimitedOutputStream
 import com.dashcam.assistant.MediaCachePolicy
 import com.dashcam.assistant.ThumbnailDiskCache
@@ -13,6 +14,7 @@ import java.io.FileInputStream
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
+import kotlinx.coroutines.runBlocking
 
 /** 生成图片缩略图时的临时目录最小可用空间兜底阈值：仅作最后防线，避免分区彻底写满时还硬试。 */
 private const val MOBILE_THUMB_MIN_FREE_BYTES = 2L * 1024 * 1024
@@ -31,11 +33,10 @@ internal class MobileThumbnailService(
         }
         val key = "mobile:$path"
         cache.get(key)?.let { return it }
-        val bitmap = if (mime.startsWith("image/")) {
-            createImageThumbnail(path)
-        } else {
-            createVideoThumbnail(path)
-        }
+        // 反馈①：优先使用 DVR 端缩略图直链（极小 GET，省流量/更快），命中即跳过客户端取帧/降采样；
+        // 任意环节失败（无直链/下载失败/解码失败）自动回退现有客户端生成逻辑（与原生端 runThumbnailGeneration 对齐）。
+        val bitmap = runCatching { tryDvrThumbnail(path)?.let { decodeSampledBytes(it) } }.getOrNull()
+            ?: if (mime.startsWith("image/")) createImageThumbnail(path) else createVideoThumbnail(path)
         try {
             return cache.put(key) { output ->
                 if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 82, output)) {
@@ -45,6 +46,46 @@ internal class MobileThumbnailService(
         } finally {
             bitmap.recycle()
         }
+    }
+
+    /**
+     * 反馈①：尝试走 DVR 端缩略图直链（与原生 MediaBrowser.runThumbnailGeneration 对齐）。
+     * 返回缩略图字节；任何失败返回 null 交由调用方回退客户端生成。
+     */
+    private fun tryDvrThumbnail(path: String): ByteArray? {
+        val backend = backendProvider() ?: return null
+        val item = MediaItem(
+            path = path,
+            name = path.substringAfterLast('/'),
+            thumb = "",
+            date = "",
+            duration = 0.0,
+            size = 0,
+            type = "",
+            locked = false
+        )
+        val url = backend.dvrThumbnailUrl(item) ?: return null
+        return try {
+            runBlocking { backend.fetchThumbnail(url) }
+        } catch (e: Exception) {
+            AppLog.w("缩略图", "DVR 缩略图直链失败，回退客户端生成：$path，${e.message}")
+            null
+        }
+    }
+
+    /** 将 DVR 缩略图字节解码为缩略 Bitmap（按需降采样到 maxDimension）。 */
+    private fun decodeSampledBytes(bytes: ByteArray): Bitmap {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) throw IOException("无法解码 DVR 缩略图尺寸")
+        var sample = 1
+        while (maxOf(bounds.outWidth, bounds.outHeight) / sample > maxDimension) sample *= 2
+        val options = BitmapFactory.Options().apply {
+            inSampleSize = sample
+            inPreferredConfig = Bitmap.Config.RGB_565
+        }
+        return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+            ?: throw IOException("DVR 缩略图解码失败")
     }
 
     private fun createImageThumbnail(path: String): Bitmap {
