@@ -117,6 +117,11 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             DashcamAssistantTheme(darkTheme = darkTheme) {
+                val context = LocalContext.current
+                // 启动后后台自动检查更新（受开关与「本次会话抑制」约束，单次启动仅执行一次，
+                // 规避深浅色切换重建 Activity 后重复弹窗）
+                LaunchedEffect(Unit) { UpdateManager.maybeAutoCheck(context) }
+
                 // rememberSaveable：深色/浅色切换会重建 Activity（见下方说明），
                 // 保存当前路由可避免重建后被弹回首页。
                 var route by rememberSaveable { mutableStateOf("home") }
@@ -128,6 +133,16 @@ class MainActivity : ComponentActivity() {
                     else -> MediaBrowserScreen(
                         onBack = { route = "home" },
                         initialTab = if (route == "live") MediaTab.LIVE else MediaTab.VIDEO
+                    )
+                }
+
+                // 全局升级提示：手动「检查更新」与启动后「后台自动检查」共用同一弹窗
+                val pendingUpdate by UpdateManager.pendingUpdateState
+                pendingUpdate?.let { latest ->
+                    UpdateDialog(
+                        latest = latest,
+                        onLater = { UpdateManager.onLater() },
+                        onDismiss = { UpdateManager.onDismiss() }
                     )
                 }
             }

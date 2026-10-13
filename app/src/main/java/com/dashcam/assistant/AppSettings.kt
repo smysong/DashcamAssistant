@@ -15,6 +15,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.FilledTonalButton
@@ -57,7 +58,6 @@ fun SettingsDialog(
     // 检查更新相关状态
     val scope = rememberCoroutineScope()
     var checking by remember { mutableStateOf(false) }
-    var pendingUpdate by remember { mutableStateOf<UpdateCenter.LatestVersion?>(null) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -135,6 +135,22 @@ fun SettingsDialog(
                             "当前版本：v$curVersion（构建号 $curCode）",
                             style = MaterialTheme.typography.bodyMedium
                         )
+                        // 自动检查更新开关（持久化）
+                        var autoCheck by remember { mutableStateOf(UpdateManager.isAutoCheckEnabled(context)) }
+                        androidx.compose.foundation.layout.Row(
+                            Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("启动时自动检查更新", style = MaterialTheme.typography.bodyMedium)
+                            Switch(
+                                checked = autoCheck,
+                                onCheckedChange = {
+                                    autoCheck = it
+                                    UpdateManager.setAutoCheckEnabled(context, it)
+                                }
+                            )
+                        }
                         FilledTonalButton(
                             onClick = {
                                 checking = true
@@ -145,7 +161,7 @@ fun SettingsDialog(
                                         UpdateCenter.CheckResult.Error ->
                                             Toast.makeText(context, "检查更新失败，请稍后重试", Toast.LENGTH_SHORT).show()
                                         is UpdateCenter.CheckResult.Available ->
-                                            pendingUpdate = r.latest
+                                            UpdateManager.showManual(r.latest)
                                     }
                                     checking = false
                                 }
@@ -158,15 +174,12 @@ fun SettingsDialog(
             }
         }
     )
-
-    if (pendingUpdate != null) {
-        UpdateDialog(latest = pendingUpdate!!, onDismiss = { pendingUpdate = null })
-    }
 }
 
 @Composable
-private fun UpdateDialog(
+fun UpdateDialog(
     latest: UpdateCenter.LatestVersion,
+    onLater: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -198,7 +211,7 @@ private fun UpdateDialog(
             }
         },
         dismissButton = if (latest.forceUpdate || downloading) null else {
-            { TextButton(onClick = onDismiss) { Text("以后再说") } }
+            { TextButton(onClick = onLater) { Text("以后再说") } }
         },
         title = { Text("发现新版本 v${latest.versionName}") },
         containerColor = MaterialTheme.colorScheme.background,

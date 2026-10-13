@@ -1,10 +1,16 @@
 package com.dashcam.assistant
 
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.content.pm.PackageInstaller
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.widget.Toast
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -176,11 +182,63 @@ object UpdateCenter {
         val uri = FileProvider.getUriForFile(
             context, context.packageName + FILE_PROVIDER_AUTHORITY_SUFFIX, file
         )
-        val intent = Intent(Intent.ACTION_VIEW).apply {
+        val viewIntent = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(uri, "application/vnd.android.package-archive")
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        context.startActivity(intent)
+        // 优先走系统安装器（ACTION_VIEW 可被某活动解析）
+        val hasSystemInstaller = viewIntent.resolveActivity(context.packageManager) != null
+        if (hasSystemInstaller) {
+            context.startActivity(viewIntent)
+        } else {
+            // 无系统默认安装器时，使用 PackageInstaller 会话 API 直接安装升级
+            val ok = installViaPackageInstaller(context, file)
+            if (!ok) {
+                Toast.makeText(context, "未找到系统安装器，且内置安装失败", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    /**
+     * 无系统默认安装器时的兜底：通过 [PackageInstaller] 会话直接提交安装。
+     * 该路径不依赖外部「包安装器」活动来解析 ACTION_VIEW，由系统 PackageManager 直接处理升级。
+     */
+    private fun installViaPackageInstaller(context: Context, file: File): Boolean = try {
+        val installer = context.packageManager.packageInstaller
+        val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL).apply {
+            setAppPackageName(context.packageName)
+        }
+        val sessionId = installer.createSession(params)
+        installer.openSession(sessionId).use { session ->
+            session.openWrite("dashcam_update", 0, file.length()).use { out ->
+                file.inputStream().use { input -> input.copyTo(out) }
+                session.fsync(out)
+            }
+            val action = "com.dashcam.assistant.action.UPDATE_INSTALL_RESULT"
+            val receiver = object : BroadcastReceiver() {
+                override fun onReceive(ctx: Context?, intent: Intent?) {
+                    val self = this
+                    runCatching { context.unregisterReceiver(self) }
+                    val status = intent?.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)
+                    val msg = if (status == PackageInstaller.STATUS_SUCCESS) {
+                        "应用已升级，请重新打开"
+                    } else {
+                        "安装失败：${intent?.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) ?: "未知错误"}"
+                    }
+                    Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                }
+            }
+            ContextCompat.registerReceiver(context, receiver, IntentFilter(action), ContextCompat.RECEIVER_NOT_EXPORTED)
+            val pi = PendingIntent.getBroadcast(
+                context, 0, Intent(action),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            session.commit(pi.intentSender)
+        }
+        true
+    } catch (e: Exception) {
+        AppLog.w("UpdateCenter", "PackageInstaller 安装失败：${e.message}")
+        false
     }
 
     private fun File.sha256(): String {

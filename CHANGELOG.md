@@ -13,6 +13,9 @@
   - 升级弹窗展示版本号、更新内容（changelog）、下载进度；支持**强制更新**（不可取消、隐藏「以后再说」）。
   - 下载走 **HTTP Range 断点续传**（206 续传、进度 0–100%）；完成后**校验 SHA-256**，不一致则删除重试一次，仍不符则报错并中止。
   - 校验通过经 **FileProvider**（`${applicationId}.fileprovider`，暴露 `cacheDir/updates`）调起系统安装器安装；已申请 `REQUEST_INSTALL_PACKAGES` 权限，`usesCleartextTraffic=true` 满足 HTTP 明文。
+  - **启动时自动检查更新（设置页「应用更新」新增开关，持久化）**：开启后 APP 启动即在后台静默调用检查接口；发现新版本自动弹出升级提示。
+  - **会话级抑制**：后台自动提示后若用户点击「以后再说」，则**本次 APP 运行期间**不再自动检查与提示（`UpdateManager.suppressedThisSession`，进程级、重启失效，不持久化）；返回键关闭不触发抑制。
+  - **安装兜底（无系统默认安装器时）**：优先 `ACTION_VIEW` 走系统安装器；当该 Intent 无活动可解析时，改用 **`PackageInstaller` 会话 API** 直接提交安装升级，避免依赖外部「包安装器」。
 - `AndroidManifest.xml` 注册 `FileProvider` 并新增 `res/xml/file_paths.xml`；`build.gradle.kts` 增加 `outputFileName` 中版本号占位（沿用既有规则）。
 
 ## [1.0.4] - 2026-10-13
