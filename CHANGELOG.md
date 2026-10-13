@@ -9,7 +9,7 @@
 ### 新增
 - **应用中心检查更新 / 升级（新增 `UpdateCenter.kt`，零新增依赖：HttpURLConnection + org.json + 协程，规避构建机拉包）**：
   - 设置页新增「应用更新」分区：展示当前版本、新增「检查更新」按钮。
-  - 调用 `GET /api/public/check-update?package=<包名>&versionCode=<当前>`（测试服务器固定 `http://172.16.1.189:8081`），按统一信封 `{"code":0,"msg":"ok","data":{has_update, latest{...}}}` 解析；`has_update` 且 `latest.version_code > 当前` 才提示升级。
+  - 调用 `GET /api/public/check-update?package=<包名>&versionCode=<当前>`（服务器 `https://app.songmy.top`），按统一信封 `{"code":0,"msg":"ok","data":{has_update, latest{...}}}` 解析；`has_update` 且 `latest.version_code > 当前` 才提示升级。
   - 升级弹窗展示版本号、更新内容（changelog）、下载进度；支持**强制更新**（不可取消、隐藏「以后再说」）。
   - 下载走 **HTTP Range 断点续传**（206 续传、进度 0–100%）；完成后**校验 SHA-256**，不一致则删除重试一次，仍不符则报错并中止。
   - 校验通过经 **FileProvider**（`${applicationId}.fileprovider`，暴露 `cacheDir/updates`）调起系统安装器安装；已申请 `REQUEST_INSTALL_PACKAGES` 权限，`usesCleartextTraffic=true` 满足 HTTP 明文。

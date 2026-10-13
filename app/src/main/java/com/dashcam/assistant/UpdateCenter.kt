@@ -32,8 +32,8 @@ import java.security.MessageDigest
  * 不引入 OkHttp/Gson。APK 下载支持 HTTP Range 断点续传，完成后校验 SHA-256 再安装。
  */
 object UpdateCenter {
-    /** 应用中心测试服务器地址（HTTP 明文，已开 usesCleartextTraffic）。 */
-    const val SERVER_BASE = "http://172.16.1.189:8081"
+    /** 应用中心服务器地址（HTTPS）。 */
+    const val SERVER_BASE = "https://app.songmy.top"
 
     private const val FILE_PROVIDER_AUTHORITY_SUFFIX = ".fileprovider"
 
