@@ -156,8 +156,8 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun MainScreen(onManage: () -> Unit, onLive: () -> Unit) {
         val status by BridgeState.status.collectAsState()
-        // 是否有新版本待升级（与升级弹窗共用同一状态），用于设置图标与版本区的小圆点提示
-        val hasUpdate by UpdateManager.pendingUpdateState
+        // 是否有新版本待升级（持久状态，关闭升级弹窗后仍保留，用于设置图标与版本区的小圆点提示）
+        val hasUpdate by UpdateManager.updateAvailableState
         // QR only exposes the paired bridge URL after the service has created its session token.
         val bridgeUrl = status.bridgeUrl
         var qr by remember { mutableStateOf<Bitmap?>(null) }

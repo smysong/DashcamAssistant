@@ -156,8 +156,10 @@ fun SettingsDialog(
                                 checking = true
                                 scope.launch {
                                     when (val r = UpdateCenter.check(context)) {
-                                        UpdateCenter.CheckResult.NoUpdate ->
+                                        UpdateCenter.CheckResult.NoUpdate -> {
+                                            UpdateManager.clearAvailable()
                                             Toast.makeText(context, "已是最新版本", Toast.LENGTH_SHORT).show()
+                                        }
                                         UpdateCenter.CheckResult.Error ->
                                             Toast.makeText(context, "检查更新失败，请稍后重试", Toast.LENGTH_SHORT).show()
                                         is UpdateCenter.CheckResult.Available ->
