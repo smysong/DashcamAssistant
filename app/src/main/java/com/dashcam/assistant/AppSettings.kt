@@ -12,6 +12,7 @@ import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
@@ -21,10 +22,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
 
 /** 媒体库每页数量偏好（与「文件名显示」一起从底部控制条收拢到设置页）。 */
 object PageSizePreference {
@@ -50,6 +53,11 @@ fun SettingsDialog(
 ) {
     var pageSize by remember { mutableStateOf(initialPageSize) }
     var nameMode by remember { mutableStateOf(initialNameMode) }
+
+    // 检查更新相关状态
+    val scope = rememberCoroutineScope()
+    var checking by remember { mutableStateOf(false) }
+    var pendingUpdate by remember { mutableStateOf<UpdateCenter.LatestVersion?>(null) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -117,6 +125,104 @@ fun SettingsDialog(
                             },
                             modifier = Modifier.fillMaxWidth()
                         ) { Text("清除回放缓存") }
+                    }
+                }
+                SettingsSection("应用更新") {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                        val curVersion = remember { UpdateCenter.currentVersionName(context) }
+                        val curCode = remember { UpdateCenter.currentVersionCode(context) }
+                        Text(
+                            "当前版本：v$curVersion（构建号 $curCode）",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        FilledTonalButton(
+                            onClick = {
+                                checking = true
+                                scope.launch {
+                                    when (val r = UpdateCenter.check(context)) {
+                                        UpdateCenter.CheckResult.NoUpdate ->
+                                            Toast.makeText(context, "已是最新版本", Toast.LENGTH_SHORT).show()
+                                        UpdateCenter.CheckResult.Error ->
+                                            Toast.makeText(context, "检查更新失败，请稍后重试", Toast.LENGTH_SHORT).show()
+                                        is UpdateCenter.CheckResult.Available ->
+                                            pendingUpdate = r.latest
+                                    }
+                                    checking = false
+                                }
+                            },
+                            enabled = !checking,
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text(if (checking) "检查中…" else "检查更新") }
+                    }
+                }
+            }
+        }
+    )
+
+    if (pendingUpdate != null) {
+        UpdateDialog(latest = pendingUpdate!!, onDismiss = { pendingUpdate = null })
+    }
+}
+
+@Composable
+private fun UpdateDialog(
+    latest: UpdateCenter.LatestVersion,
+    onDismiss: () -> Unit
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = rememberCoroutineScope()
+    var downloading by remember { mutableStateOf(false) }
+    var progress by remember { mutableStateOf(0) }
+
+    AlertDialog(
+        onDismissRequest = { if (!latest.forceUpdate && !downloading) onDismiss() },
+        confirmButton = {
+            if (downloading) {
+                TextButton(onClick = { }, enabled = false) { Text("下载中…") }
+            } else {
+                TextButton(onClick = {
+                    downloading = true
+                    progress = 0
+                    scope.launch {
+                        val ok = UpdateCenter.downloadAndInstall(context, latest) { p -> progress = p }
+                        if (!ok) {
+                            downloading = false
+                            Toast.makeText(context, "更新包下载或校验失败", Toast.LENGTH_LONG).show()
+                        } else {
+                            // 安装界面会接管，关闭本弹窗
+                            downloading = false
+                            onDismiss()
+                        }
+                    }
+                }) { Text("立即更新") }
+            }
+        },
+        dismissButton = if (latest.forceUpdate || downloading) null else {
+            { TextButton(onClick = onDismiss) { Text("以后再说") } }
+        },
+        title = { Text("发现新版本 v${latest.versionName}") },
+        containerColor = MaterialTheme.colorScheme.background,
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (latest.forceUpdate) {
+                    Text(
+                        "此版本为强制更新，请尽快升级以继续使用。",
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+                val change = latest.changelog.trim()
+                if (change.isNotEmpty()) {
+                    Text("更新内容：", style = MaterialTheme.typography.titleSmall)
+                    Text(change, style = MaterialTheme.typography.bodyMedium)
+                }
+                if (downloading) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        LinearProgressIndicator(
+                            progress = { progress / 100f },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Text("下载中… $progress%", style = MaterialTheme.typography.bodySmall)
                     }
                 }
             }

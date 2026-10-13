@@ -2,6 +2,19 @@
 
 本项目所有重要变更均记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.0.3] - 2026-10-13（测试构建：构建号降级至 3，用于联调应用中心「检查更新 / 升级」）
+
+> 本构建在功能上较 1.0.4 仅新增「应用中心检查更新」能力；版本号与构建号刻意降级，便于在真机安装 1.0.3 后，由应用中心服务器以 1.0.4（构建号 4）作为「最新版」触发升级流程验证。
+
+### 新增
+- **应用中心检查更新 / 升级（新增 `UpdateCenter.kt`，零新增依赖：HttpURLConnection + org.json + 协程，规避构建机拉包）**：
+  - 设置页新增「应用更新」分区：展示当前版本、新增「检查更新」按钮。
+  - 调用 `GET /api/public/check-update?package=<包名>&versionCode=<当前>`（测试服务器固定 `http://172.16.1.189:8081`），按统一信封 `{"code":0,"msg":"ok","data":{has_update, latest{...}}}` 解析；`has_update` 且 `latest.version_code > 当前` 才提示升级。
+  - 升级弹窗展示版本号、更新内容（changelog）、下载进度；支持**强制更新**（不可取消、隐藏「以后再说」）。
+  - 下载走 **HTTP Range 断点续传**（206 续传、进度 0–100%）；完成后**校验 SHA-256**，不一致则删除重试一次，仍不符则报错并中止。
+  - 校验通过经 **FileProvider**（`${applicationId}.fileprovider`，暴露 `cacheDir/updates`）调起系统安装器安装；已申请 `REQUEST_INSTALL_PACKAGES` 权限，`usesCleartextTraffic=true` 满足 HTTP 明文。
+- `AndroidManifest.xml` 注册 `FileProvider` 并新增 `res/xml/file_paths.xml`；`build.gradle.kts` 增加 `outputFileName` 中版本号占位（沿用既有规则）。
+
 ## [1.0.4] - 2026-10-13
 
 > 本版本聚焦「手机端首页与媒体库体验」「播放器控制能力」「下载与缓存健壮性」三大方向，并修复了若干影响真机使用的缺陷。
