@@ -726,11 +726,16 @@ private fun MediaThumb(backend: DvrBackend?, item: MediaItem, modifier: Modifier
                     withContext(Dispatchers.IO) {
                         val cached = thumbnailCache.get(key)?.let { decodeSampledFile(it, 360) }
                         cached ?: run {
-                            val generated = if (item.type == "photo") {
-                                loadSampledPhoto(b, item, thumbnailCache, 360)
-                            } else {
-                                extractVideoFrame(key)
-                            }
+                            // 优先使用 DVR 端提供的缩略图直链（更小更快，跳过客户端取帧/降采样）。
+                            // 任一步失败（无直链 / 下载失败 / 解码失败）都回退到客户端动态生成。
+                            val generated = b.dvrThumbnailUrl(item)
+                                ?.let { url -> b.fetchThumbnail(url) }
+                                ?.let { bytes -> decodeSampledBytes(bytes, 360) }
+                                ?: if (item.type == "photo") {
+                                    loadSampledPhoto(b, item, thumbnailCache, 360)
+                                } else {
+                                    extractVideoFrame(key)
+                                }
                             if (generated != null) {
                                 val cacheFile = thumbnailCache.put(key) { output ->
                                     if (!generated.compress(Bitmap.CompressFormat.JPEG, 82, output)) {
@@ -947,6 +952,19 @@ private fun decodeSampledFile(file: File, maxDimension: Int): Bitmap? {
     opts.inSampleSize = sampleSize
     opts.inJustDecodeBounds = false
     return FileInputStream(file).use { BitmapFactory.decodeStream(it, null, opts) }
+}
+
+/** 与 [decodeSampledFile] 同理，但源是内存中的字节数组（DVR 端缩略图直链）。解码失败返回 null。 */
+private fun decodeSampledBytes(bytes: ByteArray, maxDimension: Int): Bitmap? {
+    val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+    if (opts.outWidth <= 0 || opts.outHeight <= 0) return null
+    val longer = maxOf(opts.outWidth, opts.outHeight).coerceAtLeast(1)
+    var sampleSize = 1
+    while (longer / sampleSize > maxDimension) sampleSize *= 2
+    opts.inSampleSize = sampleSize
+    opts.inJustDecodeBounds = false
+    return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
 }
 
 /** 直播（RTSP）单次会话内最多自动重连次数，超限后才交给用户手动重试。 */

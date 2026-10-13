@@ -11,6 +11,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.io.IOException
 import java.io.OutputStream
+import java.io.ByteArrayOutputStream
 import java.util.regex.Pattern
 import com.dashcam.assistant.AppLog
 import com.dashcam.assistant.mediaTimestamp
@@ -56,6 +57,11 @@ interface DvrBackend {
     fun directUrl(path: String): String
     /** DVR 缩略图端点（HTTP 模式不使用，返回 null；缩略图改由客户端动态生成）。 */
     suspend fun getThumb(path: String): ByteArray?
+    /** 构造 DVR 端缩略图直链（若 DVR 提供）：原文件 /SD0/<CAT>/M_video|X.<ext> → /SD0/<CAT>/Thumb|<base>T.JPG。
+     *  无法按命名规则推导时返回 null，调用方回退到客户端动态生成。 */
+    fun dvrThumbnailUrl(item: MediaItem): String?
+    /** 下载 DVR 端缩略图字节（带 4MB 上限保护），任何失败返回 null。 */
+    suspend fun fetchThumbnail(url: String): ByteArray?
     /** 删除（HTTP 不支持，恒 false）。 */
     suspend fun deleteFile(path: String): Boolean
 }
@@ -181,6 +187,54 @@ class HttpBackend(private val host: String, private val port: Int = 80) : DvrBac
     }
 
     override suspend fun getThumb(path: String): ByteArray? = null
+
+    override fun dvrThumbnailUrl(item: MediaItem): String? {
+        if (host.isBlank()) return null
+        val p = item.path
+        // 媒体子目录 M_video / M_photo / M_event → Thumb（三类媒体都落在这类目录下）
+        val thumbDir = p.replace(Regex("/M_(?:video|photo|event)/"), "/Thumb/")
+        if (thumbDir == p) return null
+        val name = thumbDir.substringAfterLast('/')
+        val base = name.substringBeforeLast('.')
+        // 去掉段尾字母（A/B…）换成 T；无字母后缀则原样（NOR_…051A.MP4 → NOR_…051T.JPG）
+        val stem = if (base.length > 1 && base.last().isLetter()) base.dropLast(1) else base
+        val thumbPath = thumbDir.substringBeforeLast('/') + "/" + stem + "T.JPG"
+        return directUrl(thumbPath)
+    }
+
+    @OptIn(InternalCoroutinesApi::class)
+    override suspend fun fetchThumbnail(url: String): ByteArray? = withContext(Dispatchers.IO) {
+        if (url.isBlank()) return@withContext null
+        val conn = URL(url).openConnection() as HttpURLConnection
+        val cancellationHandle = currentCoroutineContext()[Job]?.invokeOnCompletion(
+            onCancelling = true, invokeImmediately = true
+        ) { if (it is CancellationException) conn.disconnect() }
+        try {
+            conn.connectTimeout = 8000; conn.readTimeout = 30000; conn.requestMethod = "GET"
+            conn.setRequestProperty("User-Agent", "DashcamAssistant")
+            if (conn.responseCode !in 200..299) return@withContext null
+            // 缩略图很小，仍做上限保护（4MB），避免异常大响应撑爆内存
+            val max = 4 * 1024 * 1024
+            val out = ByteArrayOutputStream()
+            conn.inputStream.use { input ->
+                val buf = ByteArray(16 * 1024)
+                var total = 0
+                while (true) {
+                    val n = input.read(buf)
+                    if (n < 0) break
+                    total += n
+                    if (total > max) return@withContext null
+                    out.write(buf, 0, n)
+                }
+            }
+            out.toByteArray().takeIf { it.isNotEmpty() }
+        } catch (_: Exception) {
+            null
+        } finally {
+            cancellationHandle?.dispose()
+            conn.disconnect()
+        }
+    }
 
     override suspend fun deleteFile(path: String) = false
 
