@@ -19,6 +19,10 @@
   - **设置页升级入口增强**：检测到新版本时，在「当前版本」下方显示「最新版本：vX.X.X（构建号 N）」（高亮），并将「检查更新」按钮切换为「立即更新」。
   - **「立即更新」直达下载**：点击「立即更新」**直接触发**下载 + SHA-256 校验 + 安装流程（按钮实时显示「下载中… N%」），**不再二次弹出「发现新版本」确认弹窗**（该确认弹窗仅用于后台自动检查发现的场景）。无新版本时仍显示「检查更新」。
   - **安装兜底（无系统默认安装器时）**：优先 `ACTION_VIEW` 走系统安装器；当该 Intent 无活动可解析时，改用 **`PackageInstaller` 会话 API** 直接提交安装升级，避免依赖外部「包安装器」。
+  - **下载增强（断点续传 / 后台下载 / 缓存复用）**：
+    - **断点续传**：`UpdateCenter.downloadWithResume` 基于已存在的部分文件发起 `Range: bytes=start-` 续传（服务端返回 206 则追加写入），网络中断后再次触发同版本下载自动从断点继续。
+    - **关闭设置窗口后台下载**：下载改由 `UpdateManager` 的进程级 `CoroutineScope`（SupervisorJob）驱动，与设置/升级弹窗的 Composable 生命周期解耦；关闭设置窗口或升级弹窗后下载仍在后台继续，弹窗可关闭而下载不中断（按钮/弹窗只读共享的 `isDownloading` / `downloadProgress` 状态）。
+    - **磁盘缓存复用**：`downloadAndInstall` 新增快速路径——若 `cacheDir/updates/update_<versionCode>.apk` 已存在、大小与 `apk_size` 一致且 SHA-256 校验通过，则**直接安装、不再重复下载**；下载完成后同样以 SHA-256 校验（不一致删文件重试一次）。
 - `AndroidManifest.xml` 注册 `FileProvider` 并新增 `res/xml/file_paths.xml`；`build.gradle.kts` 增加 `outputFileName` 中版本号占位（沿用既有规则）。
 
 ## [1.0.4] - 2026-10-13

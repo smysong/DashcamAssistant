@@ -1,9 +1,15 @@
 package com.dashcam.assistant
 
 import android.content.Context
+import android.widget.Toast
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * 应用更新相关共享状态（连接 [UpdateCenter] 与 UI）。
@@ -40,6 +46,53 @@ object UpdateManager {
 
     /** 单次启动是否已执行过自动检查。 */
     private var autoCheckedOnce = false
+
+    /**
+     * 后台下载作用域：随进程存活，不随设置弹窗/升级弹窗关闭而取消，
+     * 从而实现「关闭设置窗口后仍在后台继续下载」。
+     */
+    private val downloadScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** 是否正在后台下载（共享状态，设置页与升级弹窗均可观察）。 */
+    val downloadingState = mutableStateOf(false)
+    var isDownloading by downloadingState
+        private set
+
+    /** 后台下载进度 0..100（共享状态）。 */
+    val downloadProgressState = mutableStateOf(0)
+    var downloadProgress by downloadProgressState
+        private set
+
+    /** 当前正在下载的目标版本（用于 UI 判断是否匹配）。 */
+    val downloadingVersionState = mutableStateOf<UpdateCenter.LatestVersion?>(null)
+    var downloadingVersion by downloadingVersionState
+        private set
+
+    /**
+     * 在后台启动「下载 + SHA-256 校验 + 安装」，不阻塞调用方 UI。
+     * 幂等：下载进行中再次调用直接忽略，避免并发重复下载。
+     * 下载/安装由 [UpdateCenter] 负责；失败以 Toast 提示。
+     */
+    fun startDownload(context: Context, latest: UpdateCenter.LatestVersion) {
+        if (isDownloading) return
+        downloadScope.launch {
+            try {
+                isDownloading = true
+                downloadingVersion = latest
+                downloadProgress = 0
+                val ok = UpdateCenter.downloadAndInstall(context.applicationContext, latest) { p ->
+                    downloadProgress = p
+                }
+                if (!ok) {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(context.applicationContext, "更新包下载或校验失败", Toast.LENGTH_LONG).show()
+                    }
+                }
+            } finally {
+                isDownloading = false
+            }
+        }
+    }
 
     fun isAutoCheckEnabled(context: Context): Boolean =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_AUTO, false)

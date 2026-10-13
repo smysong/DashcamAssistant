@@ -58,8 +58,6 @@ fun SettingsDialog(
     // 检查更新相关状态
     val scope = rememberCoroutineScope()
     var checking by remember { mutableStateOf(false) }
-    var downloading by remember { mutableStateOf(false) }
-    var downloadProgress by remember { mutableStateOf(0) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -164,25 +162,15 @@ fun SettingsDialog(
                             )
                         }
                         if (avail != null) {
-                            // 发现新版本：点击「立即更新」直接触发 下载 + SHA-256 校验 + 安装，
-                            // 不再二次弹出「发现新版本」确认弹窗。
+                            // 发现新版本：点击「立即更新」直接触发后台下载 + SHA-256 校验 + 安装。
+                            // 下载在 UpdateManager 的独立作用域进行，关闭设置窗口也不会中断。
+                            val bgDownloading by UpdateManager.downloadingState
+                            val bgProgress by UpdateManager.downloadProgressState
                             FilledTonalButton(
-                                onClick = {
-                                    downloading = true
-                                    downloadProgress = 0
-                                    scope.launch {
-                                        val ok = UpdateCenter.downloadAndInstall(context, avail) { p ->
-                                            downloadProgress = p
-                                        }
-                                        downloading = false
-                                        if (!ok) {
-                                            Toast.makeText(context, "更新包下载或校验失败", Toast.LENGTH_LONG).show()
-                                        }
-                                    }
-                                },
-                                enabled = !downloading,
+                                onClick = { UpdateManager.startDownload(context, avail) },
+                                enabled = !bgDownloading,
                                 modifier = Modifier.fillMaxWidth()
-                            ) { Text(if (downloading) "下载中… $downloadProgress%" else "立即更新") }
+                            ) { Text(if (bgDownloading) "下载中… $bgProgress%" else "立即更新") }
                         } else {
                             FilledTonalButton(
                                 onClick = {
@@ -219,30 +207,20 @@ fun UpdateDialog(
     onDismiss: () -> Unit
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    val scope = rememberCoroutineScope()
-    var downloading by remember { mutableStateOf(false) }
-    var progress by remember { mutableStateOf(0) }
+    // 下载状态统一来自 UpdateManager 的后台作用域，关闭弹窗也不会中断下载
+    val downloading by UpdateManager.downloadingState
+    val progress by UpdateManager.downloadProgressState
 
     AlertDialog(
-        onDismissRequest = { if (!latest.forceUpdate && !downloading) onDismiss() },
+        onDismissRequest = { if (!latest.forceUpdate) onDismiss() },
         confirmButton = {
             if (downloading) {
-                TextButton(onClick = { }, enabled = false) { Text("下载中…") }
+                TextButton(onClick = { }, enabled = false) { Text("下载中… $progress%") }
             } else {
                 TextButton(onClick = {
-                    downloading = true
-                    progress = 0
-                    scope.launch {
-                        val ok = UpdateCenter.downloadAndInstall(context, latest) { p -> progress = p }
-                        if (!ok) {
-                            downloading = false
-                            Toast.makeText(context, "更新包下载或校验失败", Toast.LENGTH_LONG).show()
-                        } else {
-                            // 安装界面会接管，关闭本弹窗
-                            downloading = false
-                            onDismiss()
-                        }
-                    }
+                    // 启动后台下载并立即关闭弹窗（下载在 UpdateManager 作用域继续）
+                    UpdateManager.startDownload(context, latest)
+                    onDismiss()
                 }) { Text("立即更新") }
             }
         },

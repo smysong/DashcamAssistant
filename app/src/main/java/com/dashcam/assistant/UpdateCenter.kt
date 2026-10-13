@@ -106,7 +106,13 @@ object UpdateCenter {
         }
     }
 
-    /** 下载（支持断点续传）+ 校验 SHA-256 + 安装。onProgress 为 0..100 的字节比例。 */
+    /**
+     * 下载（支持 HTTP Range 断点续传）+ 校验 SHA-256 + 安装。onProgress 为 0..100 的字节比例。
+     *
+     * 优化：
+     * - 若磁盘缓存中已存在「完整且 SHA-256 校验通过」的安装包，则直接安装，避免重复下载；
+     * - 否则基于已存在的部分文件发起 Range 续传（[downloadWithResume]）。
+     */
     suspend fun downloadAndInstall(
         context: Context,
         latest: LatestVersion,
@@ -114,6 +120,14 @@ object UpdateCenter {
     ): Boolean = withContext(Dispatchers.IO) {
         val dir = File(context.cacheDir, "updates").also { it.mkdirs() }
         val file = File(dir, "update_${latest.versionCode}.apk")
+
+        // 快速路径：磁盘已存在「完整且校验通过」的安装包 → 直接安装，避免重复下载
+        if (cachedVerified(file, latest)) {
+            onProgress(100)
+            withContext(Dispatchers.Main) { install(context, file) }
+            return@withContext true
+        }
+
         if (!downloadWithResume(latest.downloadUrl, file, latest.apkSize, onProgress)) return@withContext false
         // 校验 SHA-256（不一致删掉重试一次）
         if (!file.sha256().equals(latest.sha256, ignoreCase = true)) {
@@ -126,6 +140,13 @@ object UpdateCenter {
         }
         withContext(Dispatchers.Main) { install(context, file) }
         true
+    }
+
+    /** 判断磁盘缓存的安装包是否已完整且 SHA-256 校验通过（可跳过下载）。 */
+    private fun cachedVerified(file: File, latest: LatestVersion): Boolean {
+        if (!file.exists() || latest.sha256.isBlank() || latest.apkSize <= 0) return false
+        if (file.length() != latest.apkSize) return false
+        return file.sha256().equals(latest.sha256, ignoreCase = true)
     }
 
     private fun downloadWithResume(
