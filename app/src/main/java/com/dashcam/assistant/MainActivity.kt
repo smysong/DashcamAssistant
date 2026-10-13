@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.border
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -26,6 +27,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.LiveTv
@@ -35,6 +37,8 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -152,6 +156,8 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun MainScreen(onManage: () -> Unit, onLive: () -> Unit) {
         val status by BridgeState.status.collectAsState()
+        // 是否有新版本待升级（与升级弹窗共用同一状态），用于设置图标与版本区的小圆点提示
+        val hasUpdate by UpdateManager.pendingUpdateState
         // QR only exposes the paired bridge URL after the service has created its session token.
         val bridgeUrl = status.bridgeUrl
         var qr by remember { mutableStateOf<Bitmap?>(null) }
@@ -194,8 +200,12 @@ class MainActivity : ComponentActivity() {
                             Text("行车记录仪助手", style = titleStyle)
                             Text("设备状态与媒体访问", color = MaterialTheme.colorScheme.onSurfaceVariant, style = subtitleStyle)
                         }
-                        IconButton(onClick = { showSettings = true }, modifier = Modifier.size(44.dp)) {
-                            Icon(Icons.Filled.Settings, contentDescription = "设置", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        BadgedBox(
+                            badge = { if (hasUpdate != null) Badge() }
+                        ) {
+                            IconButton(onClick = { showSettings = true }, modifier = Modifier.size(44.dp)) {
+                                Icon(Icons.Filled.Settings, contentDescription = "设置", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
                         }
                     }
                     ConnectionCard(status = status, compact = !isCar, onRescan = {
@@ -266,13 +276,26 @@ class MainActivity : ComponentActivity() {
                             style = MaterialTheme.typography.labelSmall,
                             textAlign = TextAlign.Center
                         )
-                        Text(
-                            "行车记录仪助手 | Version：${BuildConfig.VERSION_NAME}",
-                            modifier = Modifier.padding(top = 4.dp),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            style = MaterialTheme.typography.labelSmall,
-                            textAlign = TextAlign.Center
-                        )
+                        Row(
+                            Modifier.fillMaxWidth().padding(top = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Text(
+                                "行车记录仪助手 | Version：${BuildConfig.VERSION_NAME}",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.labelSmall,
+                                textAlign = TextAlign.Center
+                            )
+                            if (hasUpdate != null) {
+                                Box(
+                                    Modifier
+                                        .padding(start = 6.dp)
+                                        .size(8.dp)
+                                        .background(MaterialTheme.colorScheme.error, CircleShape)
+                                )
+                            }
+                        }
                     }
                 }
                 if (showQrDialog) {
