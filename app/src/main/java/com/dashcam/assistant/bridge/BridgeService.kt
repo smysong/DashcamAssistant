@@ -48,7 +48,7 @@ class BridgeService : Service() {
         createChannel()
         startForeground(NOTIF_ID, buildNotification("初始化中…"))
 
-        backend = HttpBackend(discoveredHost ?: "")
+        backend = HttpBackend(discoveredHost ?: "", listCacheDir = this.cacheDir)
         BridgeState.backendState.value = backend
         val reconnect = { scope.launch { forceRescan() }; Unit }
         http = HttpServer(this@BridgeService).also {
@@ -120,7 +120,7 @@ class BridgeService : Service() {
 
     /** 按当前方案重建后端（仅 HTTP）。 */
     private fun rebuildBackend(host: String?) {
-        backend = HttpBackend(host ?: "")
+        backend = HttpBackend(host ?: "", listCacheDir = this.cacheDir)
         http.backend = backend
         // 暴露给车机 UI 直接管理媒体（原生 Compose 浏览器调用）
         BridgeState.backendState.value = backend

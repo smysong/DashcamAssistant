@@ -91,12 +91,16 @@ import com.dashcam.assistant.AppLog
 import com.dashcam.assistant.MediaNameDisplayMode
 import com.dashcam.assistant.MediaNameDisplayPreference
 import com.dashcam.assistant.formatMediaName
+import com.dashcam.assistant.mediaTimestamp
 import com.dashcam.assistant.bridge.DvrBackend
 import com.dashcam.assistant.bridge.MediaItem
 import java.net.HttpURLConnection
 import java.net.URL
 import kotlin.math.min
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
@@ -121,6 +125,8 @@ import androidx.compose.material.icons.filled.Settings
 import java.io.File
 import java.io.FileInputStream
 import java.io.IOException
+import java.util.concurrent.PriorityBlockingQueue
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * 车机端原生媒体管理界面（对应手机扫码后的管理体验，但无需手机）。
@@ -139,7 +145,6 @@ enum class MediaTab(val type: String, val label: String) {
     LIVE("live", "实时预览")
 }
 
-private val mediaThumbSemaphore = Semaphore(4)
 private val mediaPhotoTransferSemaphore = Semaphore(1)
 
 internal object MediaThumbnailCache {
@@ -212,7 +217,8 @@ fun MediaBrowserScreen(onBack: () -> Unit, initialTab: MediaTab = MediaTab.VIDEO
     var pageSize by remember { mutableStateOf(PageSizePreference.load(context)) }
     var pageTotal by remember { mutableStateOf(0) }
 
-    /** 加载指定页（默认不刷新缓存；refresh=true 时强制重新扫描 DVR）。 */
+    /** 加载指定页（默认不刷新缓存；refresh=true 时强制重新扫描 DVR）。
+     *  两段式：先读磁盘缓存即时渲染（冷启动不转圈），再后台 scan 刷新并覆盖更新。 */
     fun loadPage(type: String, offset: Int, limit: Int, refresh: Boolean = false) {
         loadJob?.cancel()
         val b = backend
@@ -226,8 +232,24 @@ fun MediaBrowserScreen(onBack: () -> Unit, initialTab: MediaTab = MediaTab.VIDEO
             return
         }
         loadJob = scope.launch {
-            loading = true
             loadError = ""
+            // 阶段一：磁盘缓存即时渲染（无网络）。refresh 时跳过，直接进入加载态重新扫描。
+            if (!refresh) {
+                val cached = withContext(Dispatchers.IO) { b.getCachedListPage(type, offset, limit) }
+                if (generation == loadGeneration && tab.type == type && backend === b) {
+                    if (cached != null) {
+                        mediaItems = cached.items
+                        pageTotal = cached.total
+                        pageOffset = cached.offset
+                        loading = false
+                    } else {
+                        loading = true
+                    }
+                }
+            } else {
+                loading = true
+            }
+            // 阶段二：后台权威扫描（写盘），完成后覆盖更新
             try {
                 if (refresh) b.invalidateCache(type)
                 val page = withContext(Dispatchers.IO) { b.listMediaPaged(type, offset, limit) }
@@ -235,18 +257,22 @@ fun MediaBrowserScreen(onBack: () -> Unit, initialTab: MediaTab = MediaTab.VIDEO
                     mediaItems = page.items
                     pageTotal = page.total
                     pageOffset = page.offset
+                    loading = false
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 if (generation == loadGeneration && tab.type == type && backend === b) {
-                    mediaItems = emptyList()
-                    pageTotal = 0
-                    loadError = e.message ?: "读取 DVR 媒体失败"
+                    // 仅当阶段一无任何缓存可显示时才报错
+                    if (mediaItems.isEmpty()) {
+                        mediaItems = emptyList()
+                        pageTotal = 0
+                        loadError = e.message ?: "读取 DVR 媒体失败"
+                    }
+                    loading = false
                 }
             } finally {
                 if (generation == loadGeneration) {
-                    loading = false
                     loadJob = null
                 }
             }
@@ -719,45 +745,26 @@ private fun MediaThumb(backend: DvrBackend?, item: MediaItem, modifier: Modifier
     LaunchedEffect(item.path, backend, thumbnailCache) {
         val b = backend
         val key = b?.directUrl(item.path).orEmpty()
+        if (b == null || key.isEmpty()) { bmp = null; loading = false; return@LaunchedEffect }
+        // 1) 磁盘缓存快路径：命中即秒出，不进队列
+        val cached = thumbnailCache.get(key)?.let { decodeSampledFile(it, 360) }
+        if (cached != null) { bmp = cached; loading = false; return@LaunchedEffect }
         loading = true
-        bmp = if (b == null || key.isEmpty()) null else {
-            try {
-                mediaThumbSemaphore.withPermit {
-                    withContext(Dispatchers.IO) {
-                        val cached = thumbnailCache.get(key)?.let { decodeSampledFile(it, 360) }
-                        cached ?: run {
-                            // 优先使用 DVR 端提供的缩略图直链（更小更快，跳过客户端取帧/降采样）。
-                            // 任一步失败（无直链 / 下载失败 / 解码失败）都回退到客户端动态生成。
-                            val generated = b.dvrThumbnailUrl(item)
-                                ?.let { url -> b.fetchThumbnail(url) }
-                                ?.let { bytes -> decodeSampledBytes(bytes, 360) }
-                                ?: if (item.type == "photo") {
-                                    loadSampledPhoto(b, item, thumbnailCache, 360)
-                                } else {
-                                    extractVideoFrame(key)
-                                }
-                            if (generated != null) {
-                                val cacheFile = thumbnailCache.put(key) { output ->
-                                    if (!generated.compress(Bitmap.CompressFormat.JPEG, 82, output)) {
-                                        throw IOException("无法编码媒体缩略图")
-                                    }
-                                }
-                                if (cacheFile == null) {
-                                    AppLog.w("缩略图", "磁盘空间不足或缓存容量不足，未缓存：${item.name}")
-                                }
-                            }
-                            generated
-                        }
-                    }
+        // 2) 进优先级队列：最新（列表靠前）条目 priority 更小，优先于较旧/离屏条目生成。
+        val task = ThumbScheduler.submit(priority = -mediaTimestamp(item.name)) {
+            if (!cancelled) {
+                val generated = runThumbnailGeneration(b, item, key, thumbnailCache)
+                if (!cancelled) {
+                    withContext(Dispatchers.Main.immediate) { bmp = generated; loading = false }
                 }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                AppLog.w("缩略图", "生成缩略图失败：${item.name}，${e.message}")
-                null
             }
         }
-        loading = false
+        try {
+            task.await()
+        } catch (_: CancellationException) {
+            // 滚出视野被取消：标记任务取消，避免 worker 仍在跑
+            task.cancelNow()
+        }
     }
     if (bmp != null) {
         Image(
@@ -775,6 +782,86 @@ private fun MediaThumb(backend: DvrBackend?, item: MediaItem, modifier: Modifier
             Text("无预览", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
         }
     }
+}
+
+/**
+ * 缩略图优先级队列：多个 tile 同时需要生成时按 priority 调度——最新（列表靠前）条目优先生成，
+ * 较旧/离屏条目排队等到空闲。复用 DVR 端缩略图（极小 GET）后单条成本很低，队列主要用于避免
+ * 一次突发请求压垮 DVR 并发。任务取消通过 CompletableDeferred 传播，不泄漏。
+ */
+private object ThumbScheduler {
+    private const val WORKERS = 4
+    private val queue = PriorityBlockingQueue<ThumbTask>(31, Comparator { a, b ->
+        val p = a.priority.compareTo(b.priority)
+        if (p != 0) p else a.seq.compareTo(b.seq)
+    })
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val startLock = Any()
+    @Volatile private var started = false
+    private val seq = AtomicLong(0)
+
+    fun ensureStarted() {
+        synchronized(startLock) {
+            if (!started) {
+                started = true
+                repeat(WORKERS) { scope.launch { worker() } }
+            }
+        }
+    }
+
+    fun submit(priority: Long, block: suspend ThumbTask.() -> Unit): ThumbTask {
+        ensureStarted()
+        // 同优先级按提交序号 FIFO，避免饥饿
+        val task = ThumbTask(priority, seq.getAndIncrement(), block)
+        queue.put(task)
+        return task
+    }
+
+    private suspend fun worker() {
+        while (true) {
+            val task = queue.take()
+            try { task.execute() } catch (_: CancellationException) { /* 忽略 */ } catch (_: Exception) { }
+            task.complete()
+        }
+    }
+}
+
+private class ThumbTask(val priority: Long, val seq: Long, val block: suspend ThumbTask.() -> Unit) {
+    @Volatile var cancelled = false
+    private val done = CompletableDeferred<Unit>()
+    fun cancelNow() { cancelled = true; done.cancel() }
+    suspend fun await() = done.await()
+    fun complete() { if (!done.isCompleted) done.complete(Unit) }
+    /** 以自身作为扩展接收者调用 block，避免外部访问 block 属性时接收者未绑定。 */
+    suspend fun execute() { block(this) }
+}
+
+/** 生成单个媒体缩略图：优先 DVR 端直链（小 GET），失败回退客户端取帧/降采样，成功写回磁盘缓存。 */
+private suspend fun runThumbnailGeneration(
+    b: DvrBackend,
+    item: MediaItem,
+    key: String,
+    thumbnailCache: ThumbnailDiskCache
+): Bitmap? {
+    val generated = b.dvrThumbnailUrl(item)
+        ?.let { url -> b.fetchThumbnail(url) }
+        ?.let { bytes -> decodeSampledBytes(bytes, 360) }
+        ?: if (item.type == "photo") {
+            loadSampledPhoto(b, item, thumbnailCache, 360)
+        } else {
+            extractVideoFrame(key)
+        }
+    if (generated != null) {
+        val cacheFile = thumbnailCache.put(key) { output ->
+            if (!generated.compress(Bitmap.CompressFormat.JPEG, 82, output)) {
+                throw IOException("无法编码媒体缩略图")
+            }
+        }
+        if (cacheFile == null) {
+            AppLog.w("缩略图", "磁盘空间不足或缓存容量不足，未缓存：${item.name}")
+        }
+    }
+    return generated
 }
 
 /**

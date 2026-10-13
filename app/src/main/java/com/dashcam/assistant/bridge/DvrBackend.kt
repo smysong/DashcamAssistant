@@ -4,11 +4,17 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.InternalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.net.HttpURLConnection
 import java.net.URL
+import java.io.File
 import java.io.IOException
 import java.io.OutputStream
 import java.io.ByteArrayOutputStream
@@ -43,6 +49,8 @@ interface DvrBackend {
     suspend fun listMedia(type: String): List<MediaItem>
     /** 分页列出媒体：offset 起始下标（从 0 开始），limit 每页数量。后端缓存全量枚举后按页切片。 */
     suspend fun listMediaPaged(type: String, offset: Int, limit: Int): PageResult
+    /** 仅从本地磁盘缓存读取已扫描的列表分页（无网络）；无缓存返回 null。用于首屏即时渲染。 */
+    fun getCachedListPage(type: String, offset: Int, limit: Int): PageResult?
     /** 清空指定类型（或所有类型）的枚举缓存，强制下次重新扫描 DVR。 */
     fun invalidateCache(type: String? = null)
     /** 取文件字节（下载/回放中继用）。 */
@@ -97,7 +105,12 @@ private val SUPPORTED_MEDIA_TYPES = setOf("video", "event", "photo")
 /**
  * HTTP 后端：HTTP:80 目录索引(列表/下载) + RTSP:554(直播)，不占用 amba 会话，与原厂 APP 永久共存。
  */
-class HttpBackend(private val host: String, private val port: Int = 80) : DvrBackend {
+class HttpBackend(
+    private val host: String,
+    private val port: Int = 80,
+    /** 列表磁盘缓存目录（来自 Context.cacheDir）；为 null 时禁用磁盘缓存（仅内存，测试场景）。 */
+    private val listCacheDir: File? = null
+) : DvrBackend {
     override fun isReady() = host.isNotEmpty()
     override fun liveUrl() = if (host.isBlank()) "" else "rtsp://$host/live"
     override fun supportsDelete() = false
@@ -119,7 +132,7 @@ class HttpBackend(private val host: String, private val port: Int = 80) : DvrBac
     // 在 2.4G WiFi(≈200M) 下网络并非瓶颈，故拉长 TTL 减少重复全量扫描。
     private val LIST_CACHE_MS = 120_000L
 
-    /** 取得（必要时扫描并缓存）某类型的全量媒体列表。 */
+    /** 取得（必要时扫描并缓存）某类型的全量媒体列表。扫描结果同时落盘，供冷启动即时渲染。 */
     private suspend fun collectAll(type: String): List<MediaItem> {
         require(type in SUPPORTED_MEDIA_TYPES) { "不支持的媒体分类：$type" }
         val now = System.currentTimeMillis()
@@ -128,23 +141,26 @@ class HttpBackend(private val host: String, private val port: Int = 80) : DvrBac
             val ts = listCacheTs[type] ?: 0
             if (cached != null && now - ts < LIST_CACHE_MS) return cached
         }
-        val out = mutableListOf<MediaItem>()
-        if (host.isEmpty()) return out
+        if (host.isEmpty()) return emptyList()
         val roots = when (type) {
             "photo" -> photoRoots
             "event" -> eventRoots
             else -> videoRoots
         }
-        val seen = mutableSetOf<String>()
         var scannedDirectory = false
-        // 按分类根目录扫描：目录语义已知，文件即使无 NOR/EVT/PHO 前缀也收录。
-        for (root in roots) {
-            if (collect(root, 0, type, out, seen, knownRoot = true)) scannedDirectory = true
+        // 并行扫描各分类根目录：DVR 嵌入式服务器并发能力有限，用信号量限制并发上限避免压垮设备。
+        val sem = Semaphore(4)
+        val results = coroutineScope {
+            roots.map { root ->
+                async(Dispatchers.IO) { sem.withPermit { collect(root, 0, type, knownRoot = true, visited = mutableSetOf()) } }
+            }.awaitAll()
         }
+        val out = mutableListOf<MediaItem>()
+        for ((list, ok) in results) { out += list; scannedDirectory = scannedDirectory || ok }
         // 已知根为空（机型/固件差异）时回退：先扫 SD 卡根，再退到站点根；
         // 回退扫描不做目录语义假设，仅按「文件名前缀 + 路径层级」严格分类。
-        if (out.isEmpty() && collect("/SD0/", 0, type, out, seen, knownRoot = false)) scannedDirectory = true
-        if (out.isEmpty() && collect("/", 0, type, out, seen, knownRoot = false)) scannedDirectory = true
+        if (out.isEmpty()) { val (l, ok) = collect("/SD0/", 0, type, knownRoot = false, visited = mutableSetOf()); out += l; scannedDirectory = scannedDirectory || ok }
+        if (out.isEmpty()) { val (l, ok) = collect("/", 0, type, knownRoot = false, visited = mutableSetOf()); out += l; scannedDirectory = scannedDirectory || ok }
         if (!scannedDirectory) throw IOException("无法读取 DVR 媒体目录，请确认 HTTP 目录索引和设备目录配置")
         // 统一按时间倒序（新的在前），保证按日期分栏时同一天连续出现，且分页顺序稳定；
         // 同一秒的多个文件（A/B 后缀）再用文件名降序做稳定次序。
@@ -165,6 +181,8 @@ class HttpBackend(private val host: String, private val port: Int = 80) : DvrBac
             listCache[type] = filtered
             listCacheTs[type] = now
         }
+        // 落盘：App 重开/冷启动时可直接渲染，无需等待 DVR 整目录扫描（见 getCachedListPage）。
+        writeListCache(type, filtered)
         return filtered
     }
 
@@ -173,6 +191,85 @@ class HttpBackend(private val host: String, private val port: Int = 80) : DvrBac
             if (type.isNullOrEmpty()) { listCache.clear(); listCacheTs.clear() }
             else { listCache.remove(type); listCacheTs.remove(type) }
         }
+        // 同时清除磁盘缓存（按类型或全清），避免下次冷启动渲染到过期列表。
+        try {
+            val dir = listCacheDir ?: return
+            if (type.isNullOrEmpty()) {
+                dir.listFiles { f -> f.name.startsWith(LIST_CACHE_PREFIX) && f.name.endsWith(".json") }
+                    ?.forEach { it.delete() }
+            } else {
+                listCacheFile(type)?.delete()
+            }
+        } catch (_: Exception) { /* 清缓存失败不影响主流程 */ }
+    }
+
+    // ---- 列表磁盘缓存（落盘全量枚举结果）----
+    // 冷启动时无需等 DVR 整目录扫描即可即时渲染；后台刷新完成后再覆盖更新。
+    // 以 host 区分文件名，避免切换不同 DVR 时串缓存。
+    private val LIST_CACHE_PREFIX = "dashcam_list_"
+
+    private fun listCacheFile(type: String): File? {
+        val dir = listCacheDir ?: return null
+        val safeHost = host.replace(Regex("[^A-Za-z0-9._-]"), "_")
+        return File(dir, "${LIST_CACHE_PREFIX}${safeHost}_$type.json")
+    }
+
+    private fun writeListCache(type: String, items: List<MediaItem>) {
+        val file = listCacheFile(type) ?: return
+        try {
+            val arr = org.json.JSONArray()
+            for (it in items) {
+                org.json.JSONObject().apply {
+                    put("path", it.path)
+                    put("name", it.name)
+                    put("date", it.date)
+                    put("duration", it.duration)
+                    put("size", it.size)
+                    put("type", it.type)
+                    put("locked", it.locked)
+                }.also { o -> arr.put(o) }
+            }
+            file.writeText(arr.toString(), Charsets.UTF_8)
+        } catch (e: Exception) {
+            AppLog.w("媒体", "写入列表磁盘缓存失败：${e.message}")
+        }
+    }
+
+    private fun readListCache(type: String): List<MediaItem>? {
+        val file = listCacheFile(type) ?: return null
+        if (!file.exists()) return null
+        return try {
+            val arr = org.json.JSONArray(file.readText(Charsets.UTF_8))
+            val out = mutableListOf<MediaItem>()
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                out.add(
+                    MediaItem(
+                        o.getString("path"),
+                        o.getString("name"),
+                        "",
+                        o.optString("date", ""),
+                        o.optDouble("duration", 0.0),
+                        o.optLong("size", 0L),
+                        o.optString("type", "video"),
+                        o.optBoolean("locked", false)
+                    )
+                )
+            }
+            out.ifEmpty { null }
+        } catch (e: Exception) {
+            AppLog.w("媒体", "读取列表磁盘缓存失败：${e.message}")
+            null
+        }
+    }
+
+    override fun getCachedListPage(type: String, offset: Int, limit: Int): PageResult? {
+        val all = readListCache(type) ?: return null
+        val from = maxOf(0, offset)
+        val limit0 = maxOf(1, limit)
+        val to = minOf(all.size, from + limit0)
+        val slice = if (from >= all.size) emptyList() else all.subList(from, to)
+        return PageResult(slice, all.size, from, limit0)
     }
 
     override suspend fun listMedia(type: String): List<MediaItem> = withContext(Dispatchers.IO) { collectAll(type) }
@@ -286,27 +383,28 @@ class HttpBackend(private val host: String, private val port: Int = 80) : DvrBac
         dir: String,
         depth: Int,
         type: String,
-        out: MutableList<MediaItem>,
-        visited: MutableSet<String>,
-        knownRoot: Boolean
-    ): Boolean {
+        knownRoot: Boolean,
+        visited: MutableSet<String>
+    ): Pair<List<MediaItem>, Boolean> {
         currentCoroutineContext().ensureActive()
-        if (depth > 8 || !visited.add(dir)) return false
-        val html = httpGetText(ensureSlash(dir)) ?: return false
+        if (depth > 8 || !visited.add(dir)) return emptyList<MediaItem>() to false
+        val html = httpGetText(ensureSlash(dir)) ?: return emptyList<MediaItem>() to false
         // 索引页里每个条目的文件大小（Cherokee/Apache/Nginx 目录索引都带大小列），
         // 用于让列表与下载前能显示文件大小；解析不到时降级为 0，不影响其它功能。
         val sizes = parseIndexSizes(html)
         AppLog.d("媒体", "索引 $dir：解析到 ${sizes.size} 个文件大小")
+        val out = mutableListOf<MediaItem>()
         for (link in parseLinks(html)) {
             currentCoroutineContext().ensureActive()
             val full = resolve(dir, link)
             if (full.isEmpty()) continue
-            if (link.endsWith("/")) collect(full, depth + 1, type, out, visited, knownRoot)
-            else if (matchesType(full, type, knownRoot)) {
+            if (link.endsWith("/")) {
+                out += collect(full, depth + 1, type, knownRoot, visited).first
+            } else if (matchesType(full, type, knownRoot)) {
                 out.add(toItem(full, sizes[link.substringAfterLast('/')] ?: 0L))
             }
         }
-        return true
+        return out.toList() to true
     }
 
     private fun resolve(dir: String, link: String): String {
