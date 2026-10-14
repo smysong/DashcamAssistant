@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.os.Build
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -29,6 +30,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.clickable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.QrCode
@@ -125,6 +127,11 @@ class MainActivity : ComponentActivity() {
                 // 启动后后台自动检查更新（受开关与「本次会话抑制」约束，单次启动仅执行一次，
                 // 规避深浅色切换重建 Activity 后重复弹窗）
                 LaunchedEffect(Unit) { UpdateManager.maybeAutoCheck(context) }
+                // 启动后加载开发者模式解锁状态，并清理「已安装版本」对应的升级安装包残留
+                LaunchedEffect(Unit) {
+                    DevMode.load(context)
+                    UpdateCenter.cleanupStalePackages(context)
+                }
 
                 // rememberSaveable：深色/浅色切换会重建 Activity（见下方说明），
                 // 保存当前路由可避免重建后被弹回首页。
@@ -156,6 +163,7 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun MainScreen(onManage: () -> Unit, onLive: () -> Unit) {
         val status by BridgeState.status.collectAsState()
+        val context = LocalContext.current
         // 是否有新版本待升级（持久状态，关闭升级弹窗后仍保留，用于设置图标与版本区的小圆点提示）
         val hasUpdate by UpdateManager.updateAvailableState
         // QR only exposes the paired bridge URL after the service has created its session token.
@@ -169,6 +177,9 @@ class MainActivity : ComponentActivity() {
                 val isCar = windowClass == DashcamWindowClass.EXPANDED
                 var showQrDialog by remember { mutableStateOf(false) }
                 var showSettings by remember { mutableStateOf(false) }
+                var showDevPanel by remember { mutableStateOf(false) }
+                var devTapCount by remember { mutableStateOf(0) }
+                var devLastTap by remember { mutableStateOf(0L) }
                 val metrics = dashcamLayoutMetrics(windowClass)
                 // 捕获到局部变量，供深层嵌套的 isCar 布局块使用（避免隐式接收者歧义）
                 val screenMaxHeight = maxHeight
@@ -197,7 +208,22 @@ class MainActivity : ComponentActivity() {
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text("行车记录仪助手", style = titleStyle)
+                            Text(
+                                "行车记录仪助手",
+                                style = titleStyle,
+                                modifier = Modifier.clickable {
+                                    // 连续点击 5 次进入开发者模式（2 秒内未再点击则计数归零）
+                                    val now = System.currentTimeMillis()
+                                    devTapCount = if (now - devLastTap > 2000) 1 else devTapCount + 1
+                                    devLastTap = now
+                                    if (devTapCount >= 5) {
+                                        devTapCount = 0
+                                        DevMode.unlock(context)
+                                        showDevPanel = true
+                                        Toast.makeText(context, "已进入开发者模式", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            )
                             Text("设备状态与媒体访问", color = MaterialTheme.colorScheme.onSurfaceVariant, style = subtitleStyle)
                         }
                         BadgedBox(
@@ -309,8 +335,12 @@ class MainActivity : ComponentActivity() {
                         initialNameMode = MediaNameDisplayPreference.load(ctx),
                         onPageSizeChange = { },
                         onNameModeChange = { },
+                        onOpenDev = { showSettings = false; showDevPanel = true },
                         onDismiss = { showSettings = false }
                     )
+                }
+                if (showDevPanel) {
+                    DevPanel(onDismiss = { showDevPanel = false })
                 }
             }
         }

@@ -149,6 +149,31 @@ object UpdateCenter {
         return file.sha256().equals(latest.sha256, ignoreCase = true)
     }
 
+    /**
+     * 应用启动时调用：清理升级缓存目录中「版本号 ≤ 当前运行版本」的安装包。
+     * 升级成功后 APP 以新版本号重启，旧安装包与刚装完的当前版本包都会被删掉；
+     * 尚未安装的高版本安装包（versionCode > 当前）予以保留，以供缓存复用、避免重复下载。
+     */
+    fun cleanupStalePackages(context: Context) {
+        val cur = currentVersionCode(context)
+        val dir = File(context.cacheDir, "updates")
+        if (!dir.exists()) return
+        dir.listFiles { f -> f.isFile && f.name.startsWith("update_") && f.name.endsWith(".apk") }
+            ?.forEach { f ->
+                val vc = f.name.removePrefix("update_").removeSuffix(".apk").toIntOrNull()
+                if (vc != null && vc <= cur) f.delete()
+            }
+    }
+
+    /** 清空升级/安装包缓存目录（设置页「清除缓存」调用）。返回释放的字节数。 */
+    fun clearUpdateCache(context: Context): Long {
+        val dir = File(context.cacheDir, "updates")
+        if (!dir.exists()) return 0L
+        var freed = 0L
+        dir.listFiles()?.forEach { f -> freed += f.length(); f.delete() }
+        return freed
+    }
+
     private fun downloadWithResume(
         url: String, file: File, expectedSize: Long, onProgress: (Int) -> Unit
     ): Boolean {

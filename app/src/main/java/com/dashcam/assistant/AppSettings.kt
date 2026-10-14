@@ -28,7 +28,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** 媒体库每页数量偏好（与「文件名显示」一起从底部控制条收拢到设置页）。 */
 object PageSizePreference {
@@ -50,7 +52,8 @@ fun SettingsDialog(
     initialNameMode: MediaNameDisplayMode,
     onPageSizeChange: (Int) -> Unit,
     onNameModeChange: (MediaNameDisplayMode) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    onOpenDev: () -> Unit = {}
 ) {
     var pageSize by remember { mutableStateOf(initialPageSize) }
     var nameMode by remember { mutableStateOf(initialNameMode) }
@@ -110,21 +113,32 @@ fun SettingsDialog(
                 }
                 SettingsSection("缓存管理") {
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                        val thumbCache = remember { MediaThumbnailCache.get(context) }
+                        // 合并为单一「清除缓存」：同时清理缩略图、回放、升级/安装包三类磁盘缓存
                         FilledTonalButton(
                             onClick = {
-                                val freed = thumbCache.clear()
-                                Toast.makeText(context, "已清除缩略图缓存 ${formatCacheBytes(freed)}", Toast.LENGTH_SHORT).show()
+                                scope.launch(Dispatchers.IO) {
+                                    val thumb = MediaThumbnailCache.get(context).clear()
+                                    val playback = MediaPlaybackDataSource.clearCache(context)
+                                    // 升级/安装包缓存：下载进行中不清理，避免破坏正在写入的文件
+                                    val downloading = UpdateManager.isDownloading
+                                    val update = if (downloading) 0L else UpdateCenter.clearUpdateCache(context)
+                                    val total = thumb + playback + update
+                                    val skipped = downloading
+                                    withContext(Dispatchers.Main) {
+                                        val note = if (skipped) "（升级下载进行中，已跳过安装包清理）" else ""
+                                        Toast.makeText(context, "已清除缓存 ${formatCacheBytes(total)}$note", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
                             },
                             modifier = Modifier.fillMaxWidth()
-                        ) { Text("清除缩略图缓存") }
-                        FilledTonalButton(
-                            onClick = {
-                                val freed = MediaPlaybackDataSource.clearCache(context)
-                                Toast.makeText(context, "已清除回放缓存 ${formatCacheBytes(freed)}", Toast.LENGTH_SHORT).show()
-                            },
-                            modifier = Modifier.fillMaxWidth()
-                        ) { Text("清除回放缓存") }
+                        ) { Text("清除缓存") }
+                        // 开发者模式入口（仅解锁后显示）
+                        if (DevMode.isUnlocked()) {
+                            FilledTonalButton(
+                                onClick = onOpenDev,
+                                modifier = Modifier.fillMaxWidth()
+                            ) { Text("开发者模式") }
+                        }
                     }
                 }
                 SettingsSection("应用更新") {
