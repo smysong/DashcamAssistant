@@ -255,7 +255,7 @@ fun UpdateDialog(
                 val change = latest.changelog.trim()
                 if (change.isNotEmpty()) {
                     Text("更新内容：", style = MaterialTheme.typography.titleSmall)
-                    Text(change, style = MaterialTheme.typography.bodyMedium)
+                    MarkdownText(change, style = MaterialTheme.typography.bodyMedium)
                 }
                 if (downloading) {
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
